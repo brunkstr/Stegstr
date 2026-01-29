@@ -8,12 +8,27 @@ import type { NostrEvent, NostrStateBundle } from "./types";
 import "./App.css";
 
 const STEGSTR_BUNDLE_VERSION = 1;
+const ANON_KEY_STORAGE = "stegstr_anon_key";
+
+function getOrCreateAnonKey(): string {
+  try {
+    const stored = localStorage.getItem(ANON_KEY_STORAGE);
+    if (stored && /^[a-fA-F0-9]{64}$/.test(stored)) return stored;
+  } catch (_) {}
+  const sk = Nostr.generateSecretKey();
+  const hex = Nostr.bytesToHex(sk);
+  try {
+    localStorage.setItem(ANON_KEY_STORAGE, hex);
+  } catch (_) {}
+  return hex;
+}
 
 type View = "feed" | "messages" | "followers" | "notifications" | "profile" | "settings";
 
 function App() {
   const [nsec, setNsec] = useState("");
   const [privKeyHex, setPrivKeyHex] = useState<string | null>(null);
+  const [loginFormOpen, setLoginFormOpen] = useState(false);
   const [networkEnabled, setNetworkEnabled] = useState(false);
   const [events, setEvents] = useState<NostrEvent[]>([]);
   const [profiles, setProfiles] = useState<Record<string, { name?: string; about?: string; picture?: string; nip05?: string }>>({});
@@ -36,8 +51,11 @@ function App() {
     if (searchQuery.trim()) setReplyingTo(null);
   }, [searchQuery]);
   const prevNetworkRef = useRef(false);
+  const hasSyncedAnonRef = useRef(false);
 
-  const pubkey = privKeyHex ? Nostr.getPublicKey(Nostr.hexToBytes(privKeyHex)) : null;
+  const effectivePrivKey = privKeyHex ?? getOrCreateAnonKey();
+  const pubkey = Nostr.getPublicKey(Nostr.hexToBytes(effectivePrivKey));
+  const isNostrLoggedIn = privKeyHex !== null;
   const myProfile = pubkey ? profiles[pubkey] : null;
   const myName = myProfile?.name ?? (pubkey ? `${pubkey.slice(0, 8)}…` : "");
   const myPicture = myProfile?.picture ?? null;
@@ -148,7 +166,7 @@ function App() {
 
   const dmEventIds = dmEvents.map((e) => e.id).join(",");
   useEffect(() => {
-    if (!privKeyHex || !pubkey || dmEvents.length === 0) {
+    if (!effectivePrivKey || !pubkey || dmEvents.length === 0) {
       setDmDecrypted({});
       return;
     }
@@ -165,7 +183,7 @@ function App() {
           continue;
         }
         try {
-          const plain = await Nostr.nip04Decrypt(ev.content, privKeyHex, otherPubkey);
+          const plain = await Nostr.nip04Decrypt(ev.content, effectivePrivKey, otherPubkey);
           if (!cancelled) next[ev.id] = plain;
         } catch {
           if (!cancelled) next[ev.id] = "[Decryption failed]";
@@ -174,7 +192,7 @@ function App() {
       if (!cancelled) setDmDecrypted(next);
     })();
     return () => { cancelled = true; };
-  }, [privKeyHex, pubkey, dmEventIds]);
+  }, [effectivePrivKey, pubkey, dmEventIds]);
 
   const handleLogin = useCallback(() => {
     if (!nsec.trim()) {
@@ -188,6 +206,7 @@ function App() {
         if (decoded.type === "nsec") {
           setPrivKeyHex(Nostr.bytesToHex(decoded.data));
           setStatus("Logged in");
+          setLoginFormOpen(false);
           return;
         }
       } catch (e) {
@@ -198,6 +217,7 @@ function App() {
     if (/^[a-fA-F0-9]{64}$/.test(trimmed)) {
       setPrivKeyHex(trimmed);
       setStatus("Logged in");
+      setLoginFormOpen(false);
       return;
     }
     setStatus("Enter valid nsec or 64-char hex key");
@@ -208,6 +228,7 @@ function App() {
     setPrivKeyHex(Nostr.bytesToHex(sk));
     setNsec(Nostr.nip19.nsecEncode(sk));
     setStatus("New key generated");
+    setLoginFormOpen(false);
   }, []);
 
   const handleLoadFromImage = useCallback(async () => {
@@ -268,8 +289,8 @@ function App() {
   }, [events]);
 
   const handlePost = useCallback(async () => {
-    if (!privKeyHex || !newPost.trim()) return;
-    const sk = Nostr.hexToBytes(privKeyHex);
+    if (!effectivePrivKey || !newPost.trim()) return;
+    const sk = Nostr.hexToBytes(effectivePrivKey);
     const ev = await Nostr.finishEventAsync(
       {
         kind: 1,
@@ -283,13 +304,13 @@ function App() {
     setNewPost("");
     if (networkEnabled) publishEvent(ev as NostrEvent);
     setStatus("Posted");
-  }, [privKeyHex, newPost, networkEnabled]);
+  }, [effectivePrivKey, newPost, networkEnabled]);
 
   const handleLike = useCallback(
     async (note: NostrEvent) => {
-      if (!privKeyHex) return;
+      if (!effectivePrivKey) return;
       try {
-        const sk = Nostr.hexToBytes(privKeyHex);
+        const sk = Nostr.hexToBytes(effectivePrivKey);
         const ev = await Nostr.finishEventAsync(
           {
             kind: 7,
@@ -309,14 +330,14 @@ function App() {
         setStatus("Like failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [privKeyHex, networkEnabled]
+    [effectivePrivKey, networkEnabled]
   );
 
   const handleReply = useCallback(
     async () => {
-      if (!privKeyHex || !replyingTo || !replyContent.trim()) return;
+      if (!effectivePrivKey || !replyingTo || !replyContent.trim()) return;
       try {
-        const sk = Nostr.hexToBytes(privKeyHex);
+        const sk = Nostr.hexToBytes(effectivePrivKey);
         const ev = await Nostr.finishEventAsync(
           {
             kind: 1,
@@ -338,7 +359,7 @@ function App() {
         setStatus("Reply failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [privKeyHex, replyingTo, replyContent, networkEnabled]
+    [effectivePrivKey, replyingTo, replyContent, networkEnabled]
   );
 
   const handleEditProfileOpen = useCallback(() => {
@@ -349,8 +370,8 @@ function App() {
   }, [myName, myAbout, myPicture]);
 
   const handleEditProfileSave = useCallback(async () => {
-    if (!privKeyHex || !pubkey) return;
-    const sk = Nostr.hexToBytes(privKeyHex);
+    if (!effectivePrivKey || !pubkey) return;
+    const sk = Nostr.hexToBytes(effectivePrivKey);
     const content = JSON.stringify({
       name: editName.trim() || undefined,
       about: editAbout.trim() || undefined,
@@ -381,33 +402,39 @@ function App() {
     setEditProfileOpen(false);
     if (networkEnabled) publishEvent(ev as NostrEvent);
     setStatus("Profile updated");
-  }, [privKeyHex, pubkey, editName, editAbout, editPicture, networkEnabled]);
+  }, [effectivePrivKey, pubkey, editName, editAbout, editPicture, networkEnabled]);
 
-  if (!pubkey) {
-    return (
-      <main className="app-root">
-        <header className="top-header">
-          <h1>Stegstr</h1>
-        </header>
-        <section className="login-page">
-          <h2>Log in (Nostr)</h2>
-          <p>Use your nsec or hex secret key. Identity is from your Nostr profile only.</p>
-          <input
-            type="password"
-            placeholder="nsec1… or hex key"
-            value={nsec}
-            onChange={(e) => setNsec(e.target.value)}
-            className="wide"
-          />
-          <div className="row">
-            <button type="button" onClick={handleLogin}>Log in</button>
-            <button type="button" onClick={handleGenerate}>Generate key</button>
-          </div>
-          {status && <p className="status">{status}</p>}
-        </section>
-      </main>
-    );
-  }
+  useEffect(() => {
+    if (!privKeyHex || hasSyncedAnonRef.current) return;
+    hasSyncedAnonRef.current = true;
+    const anonPubkey = Nostr.getPublicKey(Nostr.hexToBytes(getOrCreateAnonKey()));
+    const sk = Nostr.hexToBytes(privKeyHex);
+    let cancelled = false;
+    (async () => {
+      const anonEvents = events.filter((e) => e.pubkey === anonPubkey);
+      if (anonEvents.length === 0) return;
+      const newEvents: NostrEvent[] = [];
+      for (const ev of anonEvents) {
+        if (cancelled) return;
+        try {
+          const newEv = await Nostr.finishEventAsync(
+            { kind: ev.kind, content: ev.content, tags: ev.tags, created_at: ev.created_at },
+            sk
+          );
+          publishEvent(newEv as NostrEvent);
+          newEvents.push(newEv as NostrEvent);
+        } catch (_) {}
+      }
+      if (!cancelled && newEvents.length > 0) {
+        setEvents((prev) => {
+          const withoutAnon = prev.filter((e) => e.pubkey !== anonPubkey);
+          return [...withoutAnon, ...newEvents].sort((a, b) => b.created_at - a.created_at);
+        });
+        setStatus("Synced previous posts to Nostr");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [privKeyHex]);
 
   return (
     <main className="app-root primal-layout">
@@ -457,8 +484,16 @@ function App() {
             )}
             <strong className="profile-name">{myName}</strong>
             {myAbout && <p className="profile-about">{myAbout.slice(0, 120)}{myAbout.length > 120 ? "…" : ""}</p>}
-            <p className="profile-note">From your Nostr profile (kind 0)</p>
-            <button type="button" className="btn-secondary" onClick={handleEditProfileOpen}>Edit profile</button>
+            {isNostrLoggedIn ? (
+              <p className="profile-note">From your Nostr profile (kind 0)</p>
+            ) : (
+              <p className="profile-note muted">Local identity · Log in to sync to Nostr</p>
+            )}
+            {isNostrLoggedIn ? (
+              <button type="button" className="btn-secondary" onClick={handleEditProfileOpen}>Edit profile</button>
+            ) : (
+              <button type="button" className="btn-primary" onClick={() => setLoginFormOpen(true)}>Log in with Nostr</button>
+            )}
           </div>
           <nav className="side-nav">
             <button type="button" className={view === "feed" ? "active" : ""} onClick={() => setView("feed")}>Home</button>
@@ -694,6 +729,24 @@ function App() {
           </div>
         </aside>
       </div>
+
+      {loginFormOpen && (
+        <div className="modal-overlay" onClick={() => setLoginFormOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Log in with Nostr</h3>
+            <p className="muted">Enter your nsec or 64-char hex private key to use your Nostr account. Your local posts will be re-signed and published.</p>
+            <label>
+              nsec or hex key
+              <input type="password" value={nsec} onChange={(e) => setNsec(e.target.value)} placeholder="nsec1… or hex" className="wide" autoComplete="off" />
+            </label>
+            <div className="row modal-actions">
+              <button type="button" onClick={() => setLoginFormOpen(false)}>Cancel</button>
+              <button type="button" onClick={handleGenerate}>Generate new key</button>
+              <button type="button" onClick={handleLogin} className="btn-primary">Log in</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {editProfileOpen && (
         <div className="modal-overlay" onClick={() => setEditProfileOpen(false)}>
