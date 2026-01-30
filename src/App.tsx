@@ -96,6 +96,8 @@ function App() {
   const relayRef = useRef<ReturnType<typeof connectRelays> | null>(null);
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const loadingMoreRef = useRef(false);
+  const eventBufferRef = useRef<NostrEvent[]>([]);
+  const FLUSH_MS = 120;
 
   useEffect(() => {
     try {
@@ -125,6 +127,9 @@ function App() {
 
   const effectivePrivKey = privKeyHex ?? getOrCreateAnonKey();
   const pubkey = Nostr.getPublicKey(Nostr.hexToBytes(effectivePrivKey));
+  const anonPubkey = Nostr.getPublicKey(Nostr.hexToBytes(getOrCreateAnonKey()));
+  const selfPubkeys = pubkey === anonPubkey ? [pubkey] : [pubkey, anonPubkey];
+
   const isNostrLoggedIn = privKeyHex !== null;
   const myProfile = pubkey ? profiles[pubkey] : null;
   const myName = myProfile?.name ?? (pubkey ? `${pubkey.slice(0, 8)}…` : "");
@@ -135,12 +140,16 @@ function App() {
   const contacts = pubkey && events.find((e) => e.kind === 3 && e.pubkey === pubkey)
     ? (events.find((e) => e.kind === 3 && e.pubkey === pubkey)!.tags.filter((t) => t[0] === "p").map((t) => t[1]))
     : [];
-  const dmEvents = events.filter((e) => e.kind === 4);
+  const dmEvents = events.filter(
+    (e) =>
+      e.kind === 4 &&
+      (selfPubkeys.includes(e.pubkey) || e.tags.some((t) => t[0] === "p" && t[1] && selfPubkeys.includes(t[1])))
+  );
   const recentDmPartners = (() => {
     const seen = new Set<string>();
     const list: { pubkey: string }[] = [];
     for (const ev of dmEvents.sort((a, b) => b.created_at - a.created_at)) {
-      const other = ev.pubkey === pubkey ? ev.tags.find((t) => t[0] === "p")?.[1] : ev.pubkey;
+      const other = selfPubkeys.includes(ev.pubkey) ? ev.tags.find((t) => t[0] === "p")?.[1] : ev.pubkey;
       if (other && !seen.has(other)) {
         seen.add(other);
         list.push({ pubkey: other });
@@ -178,6 +187,9 @@ function App() {
   };
 
   const myNoteIds = pubkey ? new Set(notes.filter((n) => n.pubkey === pubkey).map((n) => n.id)) : new Set<string>();
+  const noteContentMatchesMutedWord = (content: string) =>
+    mutedWords.some((w) => w.trim() && content.toLowerCase().includes(w.trim().toLowerCase()));
+
   const notificationEventsRaw = pubkey
     ? events.filter(
         (e) =>
@@ -200,9 +212,6 @@ function App() {
     zapReceipts.filter((r) => r.tags.some((t) => t[0] === "e" && t[1] === noteId)).length;
   const hasLiked = (noteId: string) =>
     pubkey && reactions.some((r) => r.pubkey === pubkey && r.tags.some((t) => t[0] === "e" && t[1] === noteId));
-
-  const noteContentMatchesMutedWord = (content: string) =>
-    mutedWords.some((w) => w.trim() && content.toLowerCase().includes(w.trim().toLowerCase()));
 
   const bookmarksEvent = pubkey ? events.filter((e) => e.kind === 10003 && e.pubkey === pubkey).sort((a, b) => b.created_at - a.created_at)[0] : null;
   const bookmarkIds = new Set(bookmarksEvent?.tags.filter((t) => t[0] === "e").map((t) => t[1]) ?? []);
@@ -302,32 +311,62 @@ function App() {
     if (!networkEnabled || !pubkey) {
       relayRef.current?.close();
       relayRef.current = null;
+      eventBufferRef.current = [];
       setRelayStatus("");
       return;
     }
     setRelayStatus("Connecting…");
+    eventBufferRef.current = [];
     relayRef.current = connectRelays(
       pubkey,
       (ev) => {
-        setEvents((prev) => {
-          const byId = new Map(prev.map((e) => [e.id, e]));
-          byId.set(ev.id, ev);
-          if (ev.kind === 0) {
-            try {
-              const meta = JSON.parse(ev.content) as { name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
-              setProfiles((p) => ({ ...p, [ev.pubkey]: meta }));
-            } catch (_) {}
-          }
-          return Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
-        });
+        try {
+          if (typeof ev.id !== "string" || typeof ev.pubkey !== "string") return;
+          const safe: NostrEvent = {
+            id: ev.id,
+            pubkey: ev.pubkey,
+            created_at: typeof ev.created_at === "number" ? ev.created_at : 0,
+            kind: typeof ev.kind === "number" ? ev.kind : 0,
+            tags: Array.isArray(ev.tags) ? ev.tags : [],
+            content: typeof ev.content === "string" ? ev.content : "",
+            sig: typeof ev.sig === "string" ? ev.sig : "",
+          };
+          eventBufferRef.current.push(safe);
+        } catch (_) {}
       },
       () => setRelayStatus("Synced"),
       (err) => setRelayStatus("Error: " + (err instanceof Error ? err.message : String(err))),
       relayUrls
     );
+    const flush = () => {
+      const batch = eventBufferRef.current;
+      if (batch.length === 0) return;
+      eventBufferRef.current = [];
+      try {
+        setEvents((prev) => {
+          const byId = new Map(prev.map((e) => [e.id, e]));
+          batch.forEach((e) => byId.set(e.id, e));
+          return Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
+        });
+        const profileUpdates: Record<string, { name?: string; about?: string; picture?: string; banner?: string; nip05?: string }> = {};
+        batch.filter((e) => e.kind === 0).forEach((e) => {
+          try {
+            profileUpdates[e.pubkey] = JSON.parse(e.content) as { name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
+          } catch (_) {}
+        });
+        if (Object.keys(profileUpdates).length > 0) {
+          setProfiles((p) => ({ ...p, ...profileUpdates }));
+        }
+      } catch (err) {
+        console.error("[Stegstr] flush error", err);
+      }
+    };
+    const interval = setInterval(flush, FLUSH_MS);
     return () => {
+      clearInterval(interval);
       relayRef.current?.close();
       relayRef.current = null;
+      eventBufferRef.current = [];
       setRelayStatus("");
     };
   }, [networkEnabled, pubkey, relayUrls.join(",")]);
@@ -441,31 +480,41 @@ function App() {
     if (!justTurnedOn || !pubkey) return;
     setEvents((prev) => {
       const myEvents = prev.filter((e) => e.pubkey === pubkey);
-      myEvents.forEach((ev) => publishEvent(ev, relayUrls));
+      const BATCH = 5;
+      const DELAY_MS = 400;
+      myEvents.forEach((ev, i) => {
+        setTimeout(() => {
+          try {
+            publishEvent(ev, relayUrls);
+          } catch (_) {}
+        }, Math.floor(i / BATCH) * DELAY_MS);
+      });
       return prev;
     });
-  }, [networkEnabled, pubkey]);
+  }, [networkEnabled, pubkey, relayUrls]);
 
   const dmEventIds = dmEvents.map((e) => e.id).join(",");
   useEffect(() => {
-    if (!effectivePrivKey || !pubkey || dmEvents.length === 0) {
+    if (dmEvents.length === 0) {
       setDmDecrypted({});
       return;
     }
+    const anonPrivHex = getOrCreateAnonKey();
     let cancelled = false;
     const next: Record<string, string> = {};
     (async () => {
       for (const ev of dmEvents) {
         if (cancelled) return;
-        const otherPubkey = ev.pubkey === pubkey
-          ? (ev.tags.find((t) => t[0] === "p")?.[1])
-          : ev.pubkey;
-        if (!otherPubkey) {
+        const weAreSender = selfPubkeys.includes(ev.pubkey);
+        const ourPk = weAreSender ? ev.pubkey : ev.tags.find((t) => t[0] === "p")?.[1];
+        const otherPubkey = weAreSender ? ev.tags.find((t) => t[0] === "p")?.[1] : ev.pubkey;
+        if (!ourPk || !otherPubkey || !selfPubkeys.includes(ourPk)) {
           next[ev.id] = "[No peer]";
           continue;
         }
+        const privToUse = ourPk === pubkey ? effectivePrivKey : anonPrivHex;
         try {
-          const plain = await Nostr.nip04Decrypt(ev.content, effectivePrivKey, otherPubkey);
+          const plain = await Nostr.nip04Decrypt(ev.content, privToUse, otherPubkey);
           if (!cancelled) next[ev.id] = plain;
         } catch {
           if (!cancelled) next[ev.id] = "[Decryption failed]";
@@ -474,7 +523,7 @@ function App() {
       if (!cancelled) setDmDecrypted(next);
     })();
     return () => { cancelled = true; };
-  }, [effectivePrivKey, pubkey, dmEventIds]);
+  }, [effectivePrivKey, pubkey, dmEventIds, selfPubkeys.join(",")]);
 
   const handleLogin = useCallback(() => {
     if (!nsec.trim()) {
@@ -1000,7 +1049,7 @@ function App() {
         <aside className="sidebar left">
           <div className="profile-card">
             {myPicture ? (
-              <img src={myPicture} alt="" className="profile-avatar" />
+              <img src={myPicture} alt="" className="profile-avatar" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
             ) : (
               <div className="profile-avatar placeholder">{myName.slice(0, 1)}</div>
             )}
@@ -1107,7 +1156,7 @@ function App() {
                         <div className="note-card">
                           <div className="note-avatar">
                             {profiles[ev.pubkey]?.picture ? (
-                              <img src={profiles[ev.pubkey].picture!} alt="" />
+                              <img src={profiles[ev.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
                             ) : (
                               <span>{(profiles[ev.pubkey]?.name || ev.pubkey).slice(0, 1)}</span>
                             )}
@@ -1133,7 +1182,7 @@ function App() {
                                 return (
                                   <div className="note-images">
                                     {imgs.slice(0, 4).map((url, i) => (
-                                      <img key={i} src={url} alt="" className="note-img" />
+                                      <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
                                     ))}
                                   </div>
                                 );
@@ -1167,7 +1216,7 @@ function App() {
                               <li key={reply.id} className="note-card note-reply">
                                 <div className="note-avatar">
                                   {profiles[reply.pubkey]?.picture ? (
-                                    <img src={profiles[reply.pubkey].picture!} alt="" />
+                                    <img src={profiles[reply.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
                                   ) : (
                                     <span>{(profiles[reply.pubkey]?.name || reply.pubkey).slice(0, 1)}</span>
                                   )}
@@ -1230,7 +1279,7 @@ function App() {
                     {recentDmPartners.map(({ pubkey: pk }) => {
                       const thread = dmEvents
                         .filter((ev) => {
-                          const other = ev.pubkey === pubkey ? ev.tags.find((t) => t[0] === "p")?.[1] : ev.pubkey;
+                          const other = selfPubkeys.includes(ev.pubkey) ? ev.tags.find((t) => t[0] === "p")?.[1] : ev.pubkey;
                           return other === pk;
                         })
                         .sort((a, b) => a.created_at - b.created_at);
@@ -1256,7 +1305,7 @@ function App() {
                     const peerPk = selectedMessagePeer;
                     const thread = dmEvents
                       .filter((ev) => {
-                        const other = ev.pubkey === pubkey ? ev.tags.find((t) => t[0] === "p")?.[1] : ev.pubkey;
+                        const other = selfPubkeys.includes(ev.pubkey) ? ev.tags.find((t) => t[0] === "p")?.[1] : ev.pubkey;
                         return other === peerPk;
                       })
                       .sort((a, b) => a.created_at - b.created_at);
@@ -1269,7 +1318,7 @@ function App() {
                         </div>
                         <ul className="thread-messages">
                           {thread.map((ev) => {
-                            const isFromThem = ev.pubkey !== pubkey;
+                            const isFromThem = !selfPubkeys.includes(ev.pubkey);
                             const content = dmDecrypted[ev.id] ?? "[Decrypting…]";
                             const senderName = isFromThem ? (profiles[ev.pubkey]?.name ?? `${ev.pubkey.slice(0, 8)}…`) : myName;
                             return (
@@ -1352,7 +1401,7 @@ function App() {
                     <li key={ev.id} className="note-thread">
                       <div className="note-card">
                         <div className="note-avatar">
-                          {profiles[ev.pubkey]?.picture ? <img src={profiles[ev.pubkey].picture!} alt="" /> : <span>{(profiles[ev.pubkey]?.name || ev.pubkey).slice(0, 1)}</span>}
+                          {profiles[ev.pubkey]?.picture ? <img src={profiles[ev.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[ev.pubkey]?.name || ev.pubkey).slice(0, 1)}</span>}
                         </div>
                         <div className="note-body">
                           <div className="note-meta">
@@ -1374,7 +1423,7 @@ function App() {
                               return (
                                 <div className="note-images">
                                   {imgs.slice(0, 4).map((url, i) => (
-                                    <img key={i} src={url} alt="" className="note-img" />
+                                    <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
                                   ))}
                                 </div>
                               );
@@ -1394,7 +1443,7 @@ function App() {
                           {replies.slice(0, 3).map((reply) => (
                             <li key={reply.id} className="note-card note-reply">
                               <div className="note-avatar">
-                                {profiles[reply.pubkey]?.picture ? <img src={profiles[reply.pubkey].picture!} alt="" /> : <span>{(profiles[reply.pubkey]?.name || reply.pubkey).slice(0, 1)}</span>}
+                                {profiles[reply.pubkey]?.picture ? <img src={profiles[reply.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[reply.pubkey]?.name || reply.pubkey).slice(0, 1)}</span>}
                               </div>
                               <div className="note-body">
                                 <div className="note-meta">
@@ -1428,7 +1477,7 @@ function App() {
                     <li key={ev.id} className="note-thread">
                       <div className="note-card">
                         <div className="note-avatar">
-                          {profiles[ev.pubkey]?.picture ? <img src={profiles[ev.pubkey].picture!} alt="" /> : <span>{(profiles[ev.pubkey]?.name || ev.pubkey).slice(0, 1)}</span>}
+                          {profiles[ev.pubkey]?.picture ? <img src={profiles[ev.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[ev.pubkey]?.name || ev.pubkey).slice(0, 1)}</span>}
                         </div>
                         <div className="note-body">
                           <div className="note-meta">
@@ -1449,7 +1498,7 @@ function App() {
                               return (
                                 <div className="note-images">
                                   {imgs.slice(0, 4).map((url, i) => (
-                                    <img key={i} src={url} alt="" className="note-img" />
+                                    <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
                                   ))}
                                 </div>
                               );
@@ -1469,7 +1518,7 @@ function App() {
                           {replies.map((reply) => (
                             <li key={reply.id} className="note-card note-reply">
                               <div className="note-avatar">
-                                {profiles[reply.pubkey]?.picture ? <img src={profiles[reply.pubkey].picture!} alt="" /> : <span>{(profiles[reply.pubkey]?.name || reply.pubkey).slice(0, 1)}</span>}
+                                {profiles[reply.pubkey]?.picture ? <img src={profiles[reply.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[reply.pubkey]?.name || reply.pubkey).slice(0, 1)}</span>}
                               </div>
                               <div className="note-body">
                                 <div className="note-meta">
@@ -1575,7 +1624,7 @@ function App() {
                     <li key={ev.id} className="note-thread">
                       <div className="note-card">
                         <div className="note-avatar">
-                          {profiles[ev.pubkey]?.picture ? <img src={profiles[ev.pubkey].picture!} alt="" /> : <span>{(profiles[ev.pubkey]?.name || ev.pubkey).slice(0, 1)}</span>}
+                          {profiles[ev.pubkey]?.picture ? <img src={profiles[ev.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[ev.pubkey]?.name || ev.pubkey).slice(0, 1)}</span>}
                         </div>
                         <div className="note-body">
                           <div className="note-meta">
@@ -1592,7 +1641,7 @@ function App() {
                               return (
                                 <div className="note-images">
                                   {imgs.slice(0, 4).map((url, i) => (
-                                    <img key={i} src={url} alt="" className="note-img" />
+                                    <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
                                   ))}
                                 </div>
                               );
@@ -1612,7 +1661,7 @@ function App() {
                           {replies.map((reply) => (
                             <li key={reply.id} className="note-card note-reply">
                               <div className="note-avatar">
-                                {profiles[reply.pubkey]?.picture ? <img src={profiles[reply.pubkey].picture!} alt="" /> : <span>{(profiles[reply.pubkey]?.name || reply.pubkey).slice(0, 1)}</span>}
+                                {profiles[reply.pubkey]?.picture ? <img src={profiles[reply.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[reply.pubkey]?.name || reply.pubkey).slice(0, 1)}</span>}
                               </div>
                               <div className="note-body">
                                 <div className="note-meta">

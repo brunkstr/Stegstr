@@ -75,11 +75,19 @@ function connectRelay(
         if (msg[0] === "EVENT" && msg[2]) {
           const e = msg[2] as NostrEvent;
           if (e.id && e.pubkey && typeof e.created_at === "number" && typeof e.kind === "number" && e.content !== undefined) {
-            onEvent(e);
+            try {
+              onEvent(e);
+            } catch (err) {
+              console.error("[relay] onEvent error", err);
+            }
           }
         }
         if (msg[0] === "EOSE" && msg[1] === subId) {
-          onEose?.();
+          try {
+            onEose?.();
+          } catch (err) {
+            console.error("[relay] onEose error", err);
+          }
         }
       } catch (_) {}
     };
