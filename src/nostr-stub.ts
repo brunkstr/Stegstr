@@ -1,10 +1,17 @@
 /**
  * Minimal Nostr helpers. nsec decode uses bech32; real pubkey uses @noble/secp256k1.
- * Signing is still stub (placeholder sig) unless nostr-tools is used.
+ * Signing uses secp256k1 with @noble/hashes for sha256/hmacSha256 (required by lib).
  */
 
 import { bech32 } from "bech32";
 import * as secp from "@noble/secp256k1";
+// Sync sha256/hmac for secp256k1 signing (follow, post, like, etc.)
+import { sha256 as sha256Sync } from "@noble/hashes/sha2.js";
+import { hmac } from "@noble/hashes/hmac.js";
+
+const secpHashes = (secp as { hashes: { sha256?: (m: Uint8Array) => Uint8Array; hmacSha256?: (k: Uint8Array, m: Uint8Array) => Uint8Array } }).hashes;
+secpHashes.sha256 = (msg: Uint8Array) => sha256Sync(msg);
+secpHashes.hmacSha256 = (key: Uint8Array, msg: Uint8Array) => hmac(sha256Sync, key, msg);
 
 export function generateSecretKey(): Uint8Array {
   const buf = new Uint8Array(32);
@@ -75,23 +82,30 @@ export function finishEvent(
   return ev as { id: string; pubkey: string; created_at: number; kind: number; tags: string[][]; content: string; sig: string };
 }
 
-// NIP-19: decode nsec (bech32) or hex secret
+// NIP-19: decode nsec/npub (bech32) or hex secret
 export const nip19 = {
   decode(nip19Str: string): { type: string; data: Uint8Array } {
     const s = nip19Str.trim();
     if (s.toLowerCase().startsWith("nsec1")) {
       const decoded = bech32.decode(s, 1000);
-      if (decoded.prefix !== "nsec") throw new Error("Invalid nsec prefix");
+      if (decoded.prefix.toLowerCase() !== "nsec") throw new Error("Invalid nsec prefix");
       const bytes = bech32.fromWords(decoded.words);
-      // nsec payload is 32-byte secret (sometimes 33 with leading 0 version byte)
       const key = bytes.length >= 32 ? bytes.slice(-32) : bytes;
       if (key.length !== 32) throw new Error("nsec must decode to 32 bytes");
       return { type: "nsec", data: new Uint8Array(key) };
     }
+    if (s.toLowerCase().startsWith("npub1")) {
+      const decoded = bech32.decode(s, 1000);
+      if (decoded.prefix.toLowerCase() !== "npub") throw new Error("Invalid npub prefix");
+      const bytes = bech32.fromWords(decoded.words);
+      const key = bytes.length >= 32 ? bytes.slice(-32) : bytes;
+      if (key.length !== 32) throw new Error("npub must decode to 32 bytes");
+      return { type: "npub", data: new Uint8Array(key) };
+    }
     if (/^[a-fA-F0-9]{64}$/.test(s)) {
       return { type: "nsec", data: hexToBytes(s) };
     }
-    throw new Error("Invalid nsec or hex key");
+    throw new Error("Invalid nsec, npub, or hex key");
   },
   nsecEncode(secretKey: Uint8Array): string {
     const words = bech32.toWords(Array.from(secretKey));

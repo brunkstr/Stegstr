@@ -1,5 +1,6 @@
 mod stego;
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -20,10 +21,13 @@ pub struct StegoEncodeResult {
 fn decode_stego_image(path: String) -> Result<StegoDecodeResult, String> {
     match stego::decode_lsb(std::path::Path::new(&path)) {
         Ok(payload) => {
-            let s = String::from_utf8(payload).map_err(|e| e.to_string())?;
+            let payload_str = match String::from_utf8(payload.clone()) {
+                Ok(s) if s.trim_start().starts_with('{') => s,
+                _ => format!("base64:{}", base64::engine::general_purpose::STANDARD.encode(&payload)),
+            };
             Ok(StegoDecodeResult {
                 ok: true,
-                payload: Some(s),
+                payload: Some(payload_str),
                 error: None,
             })
         }
@@ -37,7 +41,14 @@ fn decode_stego_image(path: String) -> Result<StegoDecodeResult, String> {
 
 #[tauri::command]
 fn encode_stego_image(cover_path: String, output_path: String, payload: String) -> Result<StegoEncodeResult, String> {
-    match stego::encode_lsb(std::path::Path::new(&cover_path), payload.as_bytes()) {
+    let payload_bytes: Vec<u8> = if payload.starts_with("base64:") {
+        base64::engine::general_purpose::STANDARD
+            .decode(payload.trim_start_matches("base64:").as_bytes())
+            .map_err(|e| e.to_string())?
+    } else {
+        payload.into_bytes()
+    };
+    match stego::encode_lsb(std::path::Path::new(&cover_path), &payload_bytes) {
         Ok(png_bytes) => {
             std::fs::write(&output_path, png_bytes).map_err(|e| e.to_string())?;
             Ok(StegoEncodeResult {

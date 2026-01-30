@@ -58,10 +58,12 @@ function connectRelay(
       send([
         "REQ",
         subId,
-        { kinds: [0, 1, 3], authors: [pubkey], limit: 200 },
+        { kinds: [0, 1, 3, 5, 6, 10003], authors: [pubkey], limit: 200 },
         { kinds: [0], limit: 500 },
         { kinds: [1], limit: 300 },
+        { kinds: [6], limit: 300 },
         { kinds: [7], "#p": [pubkey], limit: 300 },
+        { kinds: [9735], "#p": [pubkey], limit: 300 },
       ]);
       send(["REQ", subDm, { kinds: [4], "#p": [pubkey], limit: 100 }]);
     };
@@ -103,6 +105,14 @@ export type ConnectRelaysResult = {
   close: () => void;
   requestProfiles: (pubkeys: string[]) => void;
   requestReplies: (noteIds: string[]) => void;
+  /** Fetch notes, profile, and contacts for a specific author. */
+  requestAuthor: (authorPubkey: string) => void;
+  /** Who follows this pubkey (kind 3 with #p). */
+  requestFollowers: (ofPubkey: string) => void;
+  /** NIP-50: search notes by text (relay-dependent). */
+  requestSearch: (query: string) => void;
+  /** Load more notes (for infinite scroll). until = oldest created_at. */
+  requestMore: (until: number) => void;
 };
 
 export function connectRelays(
@@ -115,6 +125,8 @@ export function connectRelays(
   const handles: RelayHandle[] = [];
   let eoseCount = 0;
   const expectedEose = relays.length;
+  let lastSearchSubId: string | null = null;
+  let lastMoreSubId: string | null = null;
 
   for (const url of relays) {
     const h = connectRelay(
@@ -143,6 +155,38 @@ export function connectRelays(
       const subId = "stegstr-replies-" + Math.random().toString(36).slice(2, 10);
       const payload = ["REQ", subId, { kinds: [1], "#e": noteIds, limit: 500 }];
       handles.forEach((h) => h.send(payload));
+    },
+    requestAuthor: (authorPubkey: string) => {
+      if (!authorPubkey) return;
+      const subId = "stegstr-author-" + Math.random().toString(36).slice(2, 10);
+      handles.forEach((h) => h.send(["REQ", subId, { kinds: [0, 1, 3], authors: [authorPubkey], limit: 200 }]));
+    },
+    /** Who follows this pubkey (kind 3 events that list them in "p" tag). */
+    requestFollowers: (ofPubkey: string) => {
+      if (!ofPubkey) return;
+      const subId = "stegstr-followers-" + Math.random().toString(36).slice(2, 10);
+      handles.forEach((h) => h.send(["REQ", subId, { kinds: [3], "#p": [ofPubkey], limit: 500 }]));
+    },
+    requestSearch: (query: string) => {
+      const q = query.trim();
+      if (!q) return;
+      if (lastSearchSubId) {
+        handles.forEach((h) => h.send(["CLOSE", lastSearchSubId!]));
+        lastSearchSubId = null;
+      }
+      const subId = "stegstr-search-" + Math.random().toString(36).slice(2, 10);
+      lastSearchSubId = subId;
+      const payload = ["REQ", subId, { kinds: [1], search: q, limit: 100 }];
+      handles.forEach((h) => h.send(payload));
+    },
+    requestMore: (until: number) => {
+      if (lastMoreSubId) {
+        handles.forEach((h) => h.send(["CLOSE", lastMoreSubId!]));
+        lastMoreSubId = null;
+      }
+      const subId = "stegstr-more-" + Math.random().toString(36).slice(2, 10);
+      lastMoreSubId = subId;
+      handles.forEach((h) => h.send(["REQ", subId, { kinds: [1], until, limit: 100 }]));
     },
   };
 }
