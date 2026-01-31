@@ -4,6 +4,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import * as Nostr from "./nostr-stub";
 import { connectRelays, publishEvent, DEFAULT_RELAYS } from "./relay";
 import { extractImageUrls, imageUrlFromTags, contentWithoutImages } from "./utils";
+import { ensureStegsterSuffix, MAX_NOTE_USER_CONTENT } from "./constants";
 import * as stegoCrypto from "./stego-crypto";
 import type { NostrEvent, NostrStateBundle } from "./types";
 import "./App.css";
@@ -717,7 +718,7 @@ function App() {
     const ev = await Nostr.finishEventAsync(
       {
         kind: 1,
-        content: newPost.trim(),
+        content: ensureStegsterSuffix(newPost.trim()),
         tags: [],
         created_at: Math.floor(Date.now() / 1000),
       },
@@ -866,7 +867,7 @@ function App() {
         const ev = await Nostr.finishEventAsync(
           {
             kind: 1,
-            content: replyContent.trim(),
+            content: ensureStegsterSuffix(replyContent.trim()),
             tags,
             created_at: Math.floor(Date.now() / 1000),
           },
@@ -987,8 +988,9 @@ function App() {
       for (const ev of anonEvents) {
         if (cancelled) return;
         try {
+          const content = ev.kind === 1 ? ensureStegsterSuffix(ev.content) : ev.content;
           const newEv = await Nostr.finishEventAsync(
-            { kind: ev.kind, content: ev.content, tags: ev.tags, created_at: ev.created_at },
+            { kind: ev.kind, content, tags: ev.tags, created_at: ev.created_at },
             sk
           );
           publishEvent(newEv as NostrEvent, relayUrls);
@@ -1092,7 +1094,9 @@ function App() {
                     onChange={(e) => setNewPost(e.target.value)}
                     rows={3}
                     className="wide"
+                    maxLength={MAX_NOTE_USER_CONTENT}
                   />
+                  <p className="muted char-counter">{newPost.length}/{MAX_NOTE_USER_CONTENT} (Stegstr appends &quot; Stegster&quot;)</p>
                   <button type="button" onClick={handlePost} className="btn-primary">Post</button>
                 </div>
               </section>
@@ -1201,7 +1205,8 @@ function App() {
                         {replyingTo?.id === ev.id && (
                           <div className="reply-box">
                             <p className="muted">Replying to {(profiles[replyingTo.pubkey]?.name ?? replyingTo.pubkey.slice(0, 8))}…</p>
-                            <textarea value={replyContent} onChange={(e) => setReplyContent(e.target.value)} placeholder="Write a reply…" rows={2} className="wide" />
+                            <textarea value={replyContent} onChange={(e) => setReplyContent(e.target.value)} placeholder="Write a reply…" rows={2} className="wide" maxLength={MAX_NOTE_USER_CONTENT} />
+                            <p className="muted char-counter">{replyContent.length}/{MAX_NOTE_USER_CONTENT}</p>
                             <div className="row">
                               <button type="button" onClick={() => { setReplyingTo(null); setReplyContent(""); }}>Cancel</button>
                               <button type="button" onClick={handleReply} className="btn-primary">Reply</button>
@@ -1245,7 +1250,8 @@ function App() {
                                 {replyingTo?.id === reply.id && (
                                   <div className="reply-box reply-box-inline">
                                     <p className="muted">Replying to {(profiles[replyingTo.pubkey]?.name ?? replyingTo.pubkey.slice(0, 8))}…</p>
-                                    <textarea value={replyContent} onChange={(e) => setReplyContent(e.target.value)} placeholder="Write a reply…" rows={2} className="wide" />
+                                    <textarea value={replyContent} onChange={(e) => setReplyContent(e.target.value)} placeholder="Write a reply…" rows={2} className="wide" maxLength={MAX_NOTE_USER_CONTENT} />
+                                    <p className="muted char-counter">{replyContent.length}/{MAX_NOTE_USER_CONTENT}</p>
                                     <div className="row">
                                       <button type="button" onClick={() => { setReplyingTo(null); setReplyContent(""); }}>Cancel</button>
                                       <button type="button" onClick={handleReply} className="btn-primary">Reply</button>

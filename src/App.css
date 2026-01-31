@@ -208,6 +208,7 @@ button:active { background-color: #eee; }
 .compose-avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
 .compose-body { flex: 1; min-width: 0; }
 .compose-body textarea { width: 100%; margin-bottom: 0.5rem; }
+.compose-body .char-counter, .reply-box .char-counter { font-size: 0.85rem; margin: 0.25rem 0 0.5rem; }
 .btn-primary { background: #111; color: #fff; border-color: #111; }
 .btn-primary:hover { background: #333; border-color: #333; }
 
