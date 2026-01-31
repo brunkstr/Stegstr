@@ -100,7 +100,15 @@ export async function encryptForRecipients(
   const ctWithIv = new Uint8Array(iv.length + ciphertext.byteLength);
   ctWithIv.set(iv, 0);
   ctWithIv.set(new Uint8Array(ciphertext), iv.length);
-  const cBase64 = btoa(String.fromCharCode(...ctWithIv));
+  const cBase64 = (() => {
+    const chunk = 8192;
+    let s = "";
+    for (let i = 0; i < ctWithIv.length; i += chunk) {
+      const sub = ctWithIv.subarray(i, Math.min(i + chunk, ctWithIv.length));
+      s += String.fromCharCode.apply(null, Array.from(sub));
+    }
+    return btoa(s);
+  })();
 
   const ourPubkey = Nostr.getPublicKey(Nostr.hexToBytes(ourPrivKeyHex));
   const r: { p: string; k: string }[] = [];

@@ -1,5 +1,5 @@
 /** Suffix appended to all Nostr kind 1 posts published through Stegstr */
-export const STEGSTER_SUFFIX = " Stegster";
+export const STEGSTER_SUFFIX = " Sent by Stegstr.";
 
 /** Max length for published note (common Nostr client limit) */
 export const MAX_NOTE_LENGTH = 5000;
@@ -8,7 +8,7 @@ export const MAX_NOTE_LENGTH = 5000;
 export const MAX_NOTE_USER_CONTENT = MAX_NOTE_LENGTH - STEGSTER_SUFFIX.length;
 
 /**
- * Ensures Nostr kind 1 content ends with " Stegster".
+ * Ensures Nostr kind 1 content ends with " Sent by Stegstr.".
  * Appends suffix if missing; truncates to MAX_NOTE_LENGTH if over.
  */
 export function ensureStegsterSuffix(content: string): string {

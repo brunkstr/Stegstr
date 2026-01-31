@@ -1,43 +1,126 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import * as Nostr from "./nostr-stub";
 import { connectRelays, publishEvent, DEFAULT_RELAYS } from "./relay";
-import { extractImageUrls, imageUrlFromTags, contentWithoutImages } from "./utils";
+import { extractImageUrls, mediaUrlsFromTags, isVideoUrl, contentWithoutImages, uint8ArrayToBase64 } from "./utils";
+import { uploadMedia } from "./upload";
 import { ensureStegsterSuffix, MAX_NOTE_USER_CONTENT } from "./constants";
 import * as stegoCrypto from "./stego-crypto";
+import * as logger from "./logger";
 import type { NostrEvent, NostrStateBundle } from "./types";
 import "./App.css";
 
 const STEGSTR_BUNDLE_VERSION = 1;
-const ANON_KEY_STORAGE = "stegstr_anon_key";
-const MUTE_PUBKEYS_STORAGE = "stegstr_mute_pubkeys";
-const MUTE_WORDS_STORAGE = "stegstr_mute_words";
-const RELAYS_STORAGE = "stegstr_relays";
+const BASE_ANON_KEY = "stegstr_anon_key";
+const BASE_IDENTITIES = "stegstr_identities";
+const BASE_ACTING = "stegstr_acting_identity";
+const BASE_VIEWING = "stegstr_viewing_identities";
+const BASE_MUTE_PUBKEYS = "stegstr_mute_pubkeys";
+const BASE_MUTE_WORDS = "stegstr_mute_words";
+const BASE_RELAYS = "stegstr_relays";
 
-function getOrCreateAnonKey(): string {
+function getStorageProfileSync(): string | null {
+  if (typeof window === "undefined") return null;
+  const p = new URLSearchParams(window.location.search).get("profile");
+  if (p) return p;
   try {
-    const stored = localStorage.getItem(ANON_KEY_STORAGE);
+    return localStorage.getItem("stegstr_test_profile");
+  } catch { return null; }
+}
+function getStorageKey(base: string, profile: string | null | undefined): string {
+  const prefix = profile ? `stegstr_test_${profile}_` : "";
+  return prefix + base;
+}
+
+function getOrCreateAnonKey(profile?: string | null): string {
+  const key = getStorageKey(BASE_ANON_KEY, profile);
+  try {
+    const stored = localStorage.getItem(key);
     if (stored && /^[a-fA-F0-9]{64}$/.test(stored)) return stored;
   } catch (_) {}
   const sk = Nostr.generateSecretKey();
   const hex = Nostr.bytesToHex(sk);
   try {
-    localStorage.setItem(ANON_KEY_STORAGE, hex);
+    localStorage.setItem(getStorageKey(BASE_ANON_KEY, profile), hex);
   } catch (_) {}
   return hex;
 }
 
-type View = "feed" | "messages" | "followers" | "notifications" | "profile" | "settings" | "bookmarks" | "explore";
+function loadIdentities(profile: string | null): IdentityEntry[] {
+  try {
+    const raw = localStorage.getItem(getStorageKey(BASE_IDENTITIES, profile));
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as unknown[];
+    if (!Array.isArray(arr)) return [];
+    return arr.filter(
+      (x): x is IdentityEntry =>
+        typeof x === "object" &&
+        x !== null &&
+        typeof (x as IdentityEntry).id === "string" &&
+        typeof (x as IdentityEntry).privKeyHex === "string" &&
+        /^[a-fA-F0-9]{64}$/.test((x as IdentityEntry).privKeyHex)
+    );
+  } catch (_) {}
+  return [];
+}
 
-function App() {
+function migrateToIdentities(profile: string | null): IdentityEntry[] {
+  const existing = loadIdentities(profile);
+  if (existing.length > 0) return existing;
+  const migrated: IdentityEntry[] = [];
+  try {
+    const anonKey = localStorage.getItem(getStorageKey(BASE_ANON_KEY, profile));
+    if (anonKey && /^[a-fA-F0-9]{64}$/.test(anonKey)) {
+      const pubkey = Nostr.getPublicKey(Nostr.hexToBytes(anonKey));
+      migrated.push({
+        id: "anon-" + pubkey.slice(0, 12),
+        privKeyHex: anonKey,
+        label: "Local",
+        type: "local",
+      });
+    }
+  } catch (_) {}
+  if (migrated.length > 0) {
+    try {
+      localStorage.setItem(getStorageKey(BASE_IDENTITIES, profile), JSON.stringify(migrated));
+    } catch (_) {}
+  }
+  return migrated;
+}
+
+type View = "feed" | "messages" | "followers" | "notifications" | "profile" | "settings" | "bookmarks" | "explore" | "identity";
+
+export type IdentityEntry = { id: string; privKeyHex: string; label: string; type: "local" | "nostr"; isPrivate?: boolean };
+
+function App({ profile }: { profile: string | null }) {
+  const [identities, setIdentities] = useState<IdentityEntry[]>(() => migrateToIdentities(profile));
+  const [actingPubkey, setActingPubkey] = useState<string | null>(() => {
+    try {
+      const raw = localStorage.getItem(getStorageKey(BASE_ACTING, profile));
+      if (raw && /^[a-fA-F0-9]{64}$/.test(raw)) return raw;
+    } catch (_) {}
+    return null;
+  });
+  const [viewingPubkeys, setViewingPubkeys] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(getStorageKey(BASE_VIEWING, profile));
+      if (raw) {
+        const arr = JSON.parse(raw) as string[];
+        if (Array.isArray(arr)) return new Set(arr.filter((x) => typeof x === "string" && /^[a-fA-F0-9]{64}$/.test(x)));
+      }
+    } catch (_) {}
+    return new Set();
+  });
   const [nsec, setNsec] = useState("");
-  const [privKeyHex, setPrivKeyHex] = useState<string | null>(null);
   const [loginFormOpen, setLoginFormOpen] = useState(false);
   const [networkEnabled, setNetworkEnabled] = useState(false);
   const [events, setEvents] = useState<NostrEvent[]>([]);
   const [profiles, setProfiles] = useState<Record<string, { name?: string; about?: string; picture?: string; banner?: string; nip05?: string }>>({});
   const [newPost, setNewPost] = useState("");
+  const [postMediaUrls, setPostMediaUrls] = useState<string[]>([]);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
   const [status, setStatus] = useState<string>("");
   const [decodeError, setDecodeError] = useState<string>("");
   const [relayStatus, setRelayStatus] = useState<string>("");
@@ -63,7 +146,7 @@ function App() {
   const [followingSearchInput, setFollowingSearchInput] = useState("");
   const [mutedPubkeys, setMutedPubkeys] = useState<Set<string>>(() => {
     try {
-      const raw = localStorage.getItem(MUTE_PUBKEYS_STORAGE);
+      const raw = localStorage.getItem(getStorageKey(BASE_MUTE_PUBKEYS, profile));
       if (raw) {
         const arr = JSON.parse(raw) as string[];
         if (Array.isArray(arr)) return new Set(arr);
@@ -73,7 +156,7 @@ function App() {
   });
   const [mutedWords, setMutedWords] = useState<string[]>(() => {
     try {
-      const raw = localStorage.getItem(MUTE_WORDS_STORAGE);
+      const raw = localStorage.getItem(getStorageKey(BASE_MUTE_WORDS, profile));
       if (raw) {
         const arr = JSON.parse(raw) as string[];
         if (Array.isArray(arr)) return arr;
@@ -84,7 +167,7 @@ function App() {
   const [muteInput, setMuteInput] = useState("");
   const [relayUrls, setRelayUrls] = useState<string[]>(() => {
     try {
-      const raw = localStorage.getItem(RELAYS_STORAGE);
+      const raw = localStorage.getItem(getStorageKey(BASE_RELAYS, profile));
       if (raw) {
         const arr = JSON.parse(raw) as string[];
         if (Array.isArray(arr) && arr.length > 0) return arr;
@@ -94,28 +177,32 @@ function App() {
   });
   const [newRelayUrl, setNewRelayUrl] = useState("");
   const [feedFilter, setFeedFilter] = useState<"global" | "following">("global");
+  const [detecting, setDetecting] = useState(false);
   const relayRef = useRef<ReturnType<typeof connectRelays> | null>(null);
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+  const editPfpInputRef = useRef<HTMLInputElement | null>(null);
+  const editCoverInputRef = useRef<HTMLInputElement | null>(null);
+  const postMediaInputRef = useRef<HTMLInputElement | null>(null);
   const loadingMoreRef = useRef(false);
   const eventBufferRef = useRef<NostrEvent[]>([]);
   const FLUSH_MS = 120;
 
   useEffect(() => {
     try {
-      localStorage.setItem(RELAYS_STORAGE, JSON.stringify(relayUrls));
+      localStorage.setItem(getStorageKey(BASE_RELAYS, profile), JSON.stringify(relayUrls));
     } catch (_) {}
-  }, [relayUrls]);
+  }, [relayUrls, profile]);
 
   useEffect(() => {
     try {
-      localStorage.setItem(MUTE_PUBKEYS_STORAGE, JSON.stringify([...mutedPubkeys]));
+      localStorage.setItem(getStorageKey(BASE_MUTE_PUBKEYS, profile), JSON.stringify([...mutedPubkeys]));
     } catch (_) {}
-  }, [mutedPubkeys]);
+  }, [mutedPubkeys, profile]);
   useEffect(() => {
     try {
-      localStorage.setItem(MUTE_WORDS_STORAGE, JSON.stringify(mutedWords));
+      localStorage.setItem(getStorageKey(BASE_MUTE_WORDS, profile), JSON.stringify(mutedWords));
     } catch (_) {}
-  }, [mutedWords]);
+  }, [mutedWords, profile]);
 
   useEffect(() => {
     if (searchQuery.trim()) setReplyingTo(null);
@@ -123,24 +210,90 @@ function App() {
   useEffect(() => {
     if (view !== "feed") setFocusedNoteId(null);
   }, [view]);
-  const prevNetworkRef = useRef(false);
+  const prevViewRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevViewRef.current !== null && prevViewRef.current !== view) {
+      logger.logAction("view_change", `View changed to ${view}`, { view });
+    }
+    prevViewRef.current = view;
+  }, [view]);
+
+  const prevNetworkRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (prevNetworkRef.current !== null && prevNetworkRef.current !== networkEnabled) {
+      logger.logAction("network_toggle", networkEnabled ? "Network enabled" : "Network disabled", { networkEnabled });
+    }
+    prevNetworkRef.current = networkEnabled;
+  }, [networkEnabled]);
+  const prevNetworkRefLegacy = useRef(false);
   const hasSyncedAnonRef = useRef(false);
 
-  const effectivePrivKey = privKeyHex ?? getOrCreateAnonKey();
-  const pubkey = Nostr.getPublicKey(Nostr.hexToBytes(effectivePrivKey));
-  const anonPubkey = Nostr.getPublicKey(Nostr.hexToBytes(getOrCreateAnonKey()));
-  const selfPubkeys = pubkey === anonPubkey ? [pubkey] : [pubkey, anonPubkey];
+  // Ensure at least one identity
+  useEffect(() => {
+    if (identities.length === 0) {
+      const anon = getOrCreateAnonKey(profile);
+      const pubkey = Nostr.getPublicKey(Nostr.hexToBytes(anon));
+      setIdentities([{ id: "anon-" + pubkey.slice(0, 12), privKeyHex: anon, label: "Local", type: "local" }]);
+      setActingPubkey(pubkey);
+      setViewingPubkeys(new Set([pubkey]));
+    }
+  }, [identities.length, profile]);
 
-  const isNostrLoggedIn = privKeyHex !== null;
-  const myProfile = pubkey ? profiles[pubkey] : null;
-  const myName = myProfile?.name ?? (pubkey ? `${pubkey.slice(0, 8)}…` : "");
+  useEffect(() => {
+    try {
+      localStorage.setItem(getStorageKey(BASE_IDENTITIES, profile), JSON.stringify(identities));
+    } catch (_) {}
+  }, [identities, profile]);
+  useEffect(() => {
+    if (actingPubkey) {
+      try { localStorage.setItem(getStorageKey(BASE_ACTING, profile), actingPubkey); } catch (_) {}
+    }
+  }, [actingPubkey, profile]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(getStorageKey(BASE_VIEWING, profile), JSON.stringify([...viewingPubkeys]));
+    } catch (_) {}
+  }, [viewingPubkeys, profile]);
+
+  // Sync viewing to include all identities if empty
+  useEffect(() => {
+    if (viewingPubkeys.size === 0 && identities.length > 0) {
+      setViewingPubkeys(new Set(identities.map((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)))));
+    }
+  }, [identities, viewingPubkeys.size]);
+  useEffect(() => {
+    if (!actingPubkey && identities.length > 0) {
+      const firstPk = Nostr.getPublicKey(Nostr.hexToBytes(identities[0].privKeyHex));
+      setActingPubkey(firstPk);
+    }
+  }, [actingPubkey, identities]);
+
+  const actingIdentity = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === actingPubkey);
+  const effectivePrivKey = actingIdentity?.privKeyHex ?? identities[0]?.privKeyHex ?? getOrCreateAnonKey(profile);
+  const pubkey = Nostr.getPublicKey(Nostr.hexToBytes(effectivePrivKey));
+  const selfPubkeys = Array.from(viewingPubkeys).length > 0 ? Array.from(viewingPubkeys) : [pubkey];
+
+  const getIdentityLabelsForPubkey = useCallback((pk: string): string[] => {
+    return identities
+      .filter((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === pk)
+      .map((i) => profiles[pk]?.name || i.label || pk.slice(0, 8) + "…");
+  }, [identities, profiles]);
+
+  const isNostrLoggedIn = actingIdentity?.type === "nostr";
+  // Use actingPubkey for profile display to avoid crossover with other identities (pubkey has fallback to identities[0])
+  const profileDisplayKey = actingPubkey ?? pubkey;
+  const myProfile = profileDisplayKey ? profiles[profileDisplayKey] : null;
+  const myName = myProfile?.name ?? (profileDisplayKey ? `${profileDisplayKey.slice(0, 8)}…` : "");
   const myPicture = myProfile?.picture ?? null;
   const myAbout = myProfile?.about ?? "";
   const myBanner = myProfile?.banner ?? null;
 
-  const contacts = pubkey && events.find((e) => e.kind === 3 && e.pubkey === pubkey)
-    ? (events.find((e) => e.kind === 3 && e.pubkey === pubkey)!.tags.filter((t) => t[0] === "p").map((t) => t[1]))
-    : [];
+  const ourPubkeysSet = new Set(identities.map((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex))));
+  const contacts = Array.from(viewingPubkeys).flatMap((pk) => {
+    const kind3 = events.find((e) => e.kind === 3 && e.pubkey === pk);
+    return kind3 ? kind3.tags.filter((t) => t[0] === "p").map((t) => t[1]) : [];
+  });
+  const contactsSet = new Set(contacts);
   const dmEvents = events.filter(
     (e) =>
       e.kind === 4 &&
@@ -161,7 +314,7 @@ function App() {
   const notes = events.filter((e) => e.kind === 1);
   const noteIds = new Set(notes.map((n) => n.id));
   const deletedNoteIds = new Set(
-    events.filter((e) => e.kind === 5 && e.pubkey === pubkey).flatMap((e) => e.tags.filter((t) => t[0] === "e").map((t) => t[1]))
+    events.filter((e) => e.kind === 5 && selfPubkeys.includes(e.pubkey)).flatMap((e) => e.tags.filter((t) => t[0] === "e").map((t) => t[1]))
   );
   const rootNotes = notes
     .filter((n) => {
@@ -187,14 +340,14 @@ function App() {
     return null;
   };
 
-  const myNoteIds = pubkey ? new Set(notes.filter((n) => n.pubkey === pubkey).map((n) => n.id)) : new Set<string>();
+  const myNoteIds = new Set(notes.filter((n) => selfPubkeys.includes(n.pubkey)).map((n) => n.id));
   const noteContentMatchesMutedWord = (content: string) =>
     mutedWords.some((w) => w.trim() && content.toLowerCase().includes(w.trim().toLowerCase()));
 
-  const notificationEventsRaw = pubkey
+  const notificationEventsRaw = selfPubkeys.length > 0
     ? events.filter(
         (e) =>
-          (e.kind === 7 && e.tags.some((t) => t[0] === "p" && t[1] === pubkey)) ||
+          (e.kind === 7 && e.tags.some((t) => t[0] === "p" && t[1] && selfPubkeys.includes(t[1]))) ||
           (e.kind === 1 && e.tags.some((t) => t[0] === "e" && myNoteIds.has(t[1]))) ||
           (e.kind === 6 && e.tags.some((t) => t[0] === "e" && myNoteIds.has(t[1]))) ||
           (e.kind === 9735 && e.tags.some((t) => t[0] === "e" && myNoteIds.has(t[1])))
@@ -212,13 +365,17 @@ function App() {
   const getZapCount = (noteId: string) =>
     zapReceipts.filter((r) => r.tags.some((t) => t[0] === "e" && t[1] === noteId)).length;
   const hasLiked = (noteId: string) =>
-    pubkey && reactions.some((r) => r.pubkey === pubkey && r.tags.some((t) => t[0] === "e" && t[1] === noteId));
+    reactions.some((r) => selfPubkeys.includes(r.pubkey) && r.tags.some((t) => t[0] === "e" && t[1] === noteId));
 
   const bookmarksEvent = pubkey ? events.filter((e) => e.kind === 10003 && e.pubkey === pubkey).sort((a, b) => b.created_at - a.created_at)[0] : null;
-  const bookmarkIds = new Set(bookmarksEvent?.tags.filter((t) => t[0] === "e").map((t) => t[1]) ?? []);
+  const bookmarkIds = new Set(
+    events
+      .filter((e) => e.kind === 10003 && viewingPubkeys.has(e.pubkey))
+      .flatMap((e) => e.tags.filter((t) => t[0] === "e").map((t) => t[1]))
+  );
   const hasBookmarked = (noteId: string) => bookmarkIds.has(noteId);
 
-  const profileViewPubkey = viewingProfilePubkey ?? pubkey;
+  const profileViewPubkey = viewingProfilePubkey ?? profileDisplayKey;
   const profileRootNotes = rootNotes.filter((n) => n.pubkey === profileViewPubkey);
   const profileFollowing = profileViewPubkey
     ? (events.find((e) => e.kind === 3 && e.pubkey === profileViewPubkey)?.tags?.filter((t) => t[0] === "p").map((t) => t[1]) ?? [])
@@ -300,16 +457,19 @@ function App() {
       const reposter = item.type === "repost" ? item.repost.pubkey : null;
       if (mutedPubkeys.has(note.pubkey) || (reposter && mutedPubkeys.has(reposter))) return false;
       if (isNoteMuted(note)) return false;
+      if (ourPubkeysSet.has(note.pubkey) && !viewingPubkeys.has(note.pubkey)) return false;
+      if (reposter && ourPubkeysSet.has(reposter) && !viewingPubkeys.has(reposter)) return false;
       if (feedFilter === "following") {
         const authorPk = item.type === "repost" ? item.repost.pubkey : item.note.pubkey;
-        if (!contacts.includes(authorPk)) return false;
+        if (!contactsSet.has(authorPk)) return false;
       }
       return true;
     })
     .sort((a, b) => b.sortAt - a.sortAt);
 
   useEffect(() => {
-    if (!networkEnabled || !pubkey) {
+    const authors = Array.from(viewingPubkeys).filter((pk) => pk && /^[a-fA-F0-9]{64}$/.test(pk));
+    if (!networkEnabled || authors.length === 0) {
       relayRef.current?.close();
       relayRef.current = null;
       eventBufferRef.current = [];
@@ -319,7 +479,7 @@ function App() {
     setRelayStatus("Connecting…");
     eventBufferRef.current = [];
     relayRef.current = connectRelays(
-      pubkey,
+      authors,
       (ev) => {
         try {
           if (typeof ev.id !== "string" || typeof ev.pubkey !== "string") return;
@@ -352,7 +512,14 @@ function App() {
         const profileUpdates: Record<string, { name?: string; about?: string; picture?: string; banner?: string; nip05?: string }> = {};
         batch.filter((e) => e.kind === 0).forEach((e) => {
           try {
-            profileUpdates[e.pubkey] = JSON.parse(e.content) as { name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
+            const raw = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
+            profileUpdates[e.pubkey] = {
+              name: raw.name ?? raw.display_name,
+              about: raw.about,
+              picture: raw.picture,
+              banner: raw.banner,
+              nip05: raw.nip05,
+            };
           } catch (_) {}
         });
         if (Object.keys(profileUpdates).length > 0) {
@@ -370,7 +537,7 @@ function App() {
       eventBufferRef.current = [];
       setRelayStatus("");
     };
-  }, [networkEnabled, pubkey, relayUrls.join(",")]);
+  }, [networkEnabled, [...viewingPubkeys].join(","), relayUrls.join(",")]);
 
   useEffect(() => {
     const sentinel = loadMoreSentinelRef.current;
@@ -399,7 +566,7 @@ function App() {
     const toFetch = new Set<string>(contacts);
     notes.forEach((n) => toFetch.add(n.pubkey));
     if (toFetch.size > 0) relayRef.current.requestProfiles([...toFetch].slice(0, 300));
-  }, [networkEnabled, contacts.join(","), notes.length]);
+  }, [networkEnabled, [...contactsSet].join(","), notes.length]);
 
   useEffect(() => {
     if (!networkEnabled || !relayRef.current) return;
@@ -462,7 +629,27 @@ function App() {
     relayRef.current.requestFollowers(pk);
   }, [networkEnabled, viewingProfilePubkey, pubkey]);
 
-  // NIP-50: when user searches by text (not pubkey), ask relays for matching notes (debounced)
+  // When Nostr is acting and we lack profile data, aggressively fetch after relay syncs
+  useEffect(() => {
+    if (!networkEnabled || !relayRef.current || relayStatus !== "Synced") return;
+    if (!actingPubkey || actingIdentity?.type !== "nostr") return;
+    const haveProfile = profiles[actingPubkey]?.name || profiles[actingPubkey]?.picture || profiles[actingPubkey]?.about;
+    if (haveProfile) return;
+    relayRef.current.requestProfiles([actingPubkey]);
+    relayRef.current.requestAuthor(actingPubkey);
+    const timeouts: ReturnType<typeof setTimeout>[] = [];
+    for (const delay of [1500, 3500, 7000]) {
+      timeouts.push(
+        setTimeout(() => {
+          relayRef.current?.requestProfiles([actingPubkey]);
+          relayRef.current?.requestAuthor(actingPubkey);
+        }, delay)
+      );
+    }
+    return () => timeouts.forEach((t) => clearTimeout(t));
+  }, [networkEnabled, relayStatus, actingPubkey, actingIdentity?.type, profiles]);
+
+  // NIP-50: when user searches by text (not pubkey), ask relays for matching notes and profiles (debounced)
   useEffect(() => {
     if (!networkEnabled || !relayRef.current) return;
     const trimmed = searchQuery.trim();
@@ -471,13 +658,39 @@ function App() {
     if (isPubkey) return;
     const t = setTimeout(() => {
       relayRef.current?.requestSearch(trimmed);
+      relayRef.current?.requestProfileSearch(trimmed);
+      logger.logAction("search", "Search performed", { query: trimmed.slice(0, 50), networkEnabled });
     }, 500);
     return () => clearTimeout(t);
   }, [networkEnabled, searchQuery]);
 
+  // New message modal: fetch profiles by name from relays when user types (debounced)
   useEffect(() => {
-    const justTurnedOn = networkEnabled && !prevNetworkRef.current;
-    prevNetworkRef.current = networkEnabled;
+    if (!newMessageModalOpen || !networkEnabled || !relayRef.current) return;
+    const trimmed = newMessagePubkeyInput.trim();
+    if (trimmed.length < 2) return;
+    if (resolvePubkeyFromInput(newMessagePubkeyInput)) return;
+    const t = setTimeout(() => {
+      relayRef.current?.requestProfileSearch(trimmed);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [newMessageModalOpen, newMessagePubkeyInput, networkEnabled]);
+
+  // Follow area: fetch profiles by name from relays when user types (debounced)
+  useEffect(() => {
+    if (!networkEnabled || !relayRef.current) return;
+    const trimmed = followingSearchInput.trim();
+    if (trimmed.length < 2) return;
+    if (resolvePubkeyFromInput(followingSearchInput)) return;
+    const t = setTimeout(() => {
+      relayRef.current?.requestProfileSearch(trimmed);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [networkEnabled, followingSearchInput]);
+
+  useEffect(() => {
+    const justTurnedOn = networkEnabled && !prevNetworkRefLegacy.current;
+    prevNetworkRefLegacy.current = networkEnabled;
     if (!justTurnedOn || !pubkey) return;
     setEvents((prev) => {
       const myEvents = prev.filter((e) => e.pubkey === pubkey);
@@ -500,7 +713,6 @@ function App() {
       setDmDecrypted({});
       return;
     }
-    const anonPrivHex = getOrCreateAnonKey();
     let cancelled = false;
     const next: Record<string, string> = {};
     (async () => {
@@ -513,7 +725,8 @@ function App() {
           next[ev.id] = "[No peer]";
           continue;
         }
-        const privToUse = ourPk === pubkey ? effectivePrivKey : anonPrivHex;
+        const identityForPk = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === ourPk);
+        const privToUse = identityForPk?.privKeyHex ?? effectivePrivKey;
         try {
           const plain = await Nostr.nip04Decrypt(ev.content, privToUse, otherPubkey);
           if (!cancelled) next[ev.id] = plain;
@@ -524,60 +737,102 @@ function App() {
       if (!cancelled) setDmDecrypted(next);
     })();
     return () => { cancelled = true; };
-  }, [effectivePrivKey, pubkey, dmEventIds, selfPubkeys.join(",")]);
+  }, [identities, effectivePrivKey, dmEventIds, selfPubkeys.join(",")]);
+
+  const handleAddNostrIdentity = useCallback((hexOrNsec: string) => {
+    const trimmed = hexOrNsec.trim();
+    let privHex: string;
+    if (trimmed.toLowerCase().startsWith("nsec")) {
+      try {
+        const decoded = Nostr.nip19.decode(trimmed);
+        if (decoded.type === "nsec") privHex = Nostr.bytesToHex(decoded.data);
+        else { setStatus("Invalid nsec"); return; }
+      } catch (e) {
+        setStatus("Invalid nsec: " + (e as Error).message);
+        return;
+      }
+    } else if (/^[a-fA-F0-9]{64}$/.test(trimmed)) {
+      privHex = trimmed;
+    } else {
+      setStatus("Enter valid nsec or 64-char hex key");
+      return;
+    }
+    const pk = Nostr.getPublicKey(Nostr.hexToBytes(privHex));
+    if (identities.some((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === pk)) {
+      setStatus("Identity already added");
+      return;
+    }
+    setIdentities((prev) => [...prev, { id: "nostr-" + pk.slice(0, 12), privKeyHex: privHex, label: pk.slice(0, 8) + "…", type: "nostr" }]);
+    setActingPubkey(pk);
+    setViewingPubkeys((prev) => new Set(prev).add(pk));
+    setLoginFormOpen(false);
+    setNsec("");
+    setStatus(networkEnabled ? "Nostr identity added. Fetching profile…" : "Nostr identity added. Turn Network ON to fetch your profile and posts.");
+    if (networkEnabled) {
+      const fetchProfile = () => {
+        relayRef.current?.requestProfiles([pk]);
+        relayRef.current?.requestAuthor(pk);
+      };
+      setTimeout(fetchProfile, 800);
+      setTimeout(fetchProfile, 2500);
+      setTimeout(fetchProfile, 5000);
+    }
+  }, [identities, networkEnabled]);
 
   const handleLogin = useCallback(() => {
     if (!nsec.trim()) {
       setStatus("Enter nsec or click Generate");
       return;
     }
-    const trimmed = nsec.trim();
-    if (trimmed.toLowerCase().startsWith("nsec")) {
-      try {
-        const decoded = Nostr.nip19.decode(trimmed);
-        if (decoded.type === "nsec") {
-          setPrivKeyHex(Nostr.bytesToHex(decoded.data));
-          setStatus("Logged in");
-          setLoginFormOpen(false);
-          return;
-        }
-      } catch (e) {
-        setStatus("Invalid nsec: " + (e as Error).message);
-        return;
-      }
-    }
-    if (/^[a-fA-F0-9]{64}$/.test(trimmed)) {
-      setPrivKeyHex(trimmed);
-      setStatus("Logged in");
-      setLoginFormOpen(false);
-      return;
-    }
-    setStatus("Enter valid nsec or 64-char hex key");
-  }, [nsec]);
+    handleAddNostrIdentity(nsec.trim());
+  }, [nsec, handleAddNostrIdentity]);
 
   const handleGenerate = useCallback(() => {
     const sk = Nostr.generateSecretKey();
-    setPrivKeyHex(Nostr.bytesToHex(sk));
+    const hex = Nostr.bytesToHex(sk);
+    const pk = Nostr.getPublicKey(sk);
+    setIdentities((prev) => [...prev, { id: "local-" + pk.slice(0, 12), privKeyHex: hex, label: "Local " + (prev.length + 1), type: "local" }]);
+    setActingPubkey(pk);
+    setViewingPubkeys((prev) => new Set(prev).add(pk));
     setNsec(Nostr.nip19.nsecEncode(sk));
-    setStatus("New key generated");
+    setStatus("New local identity created");
     setLoginFormOpen(false);
   }, []);
 
-  const handleLoadFromImage = useCallback(async () => {
+  const handleLoadFromImage = useCallback(async (providedPath?: string | null) => {
     setDecodeError("");
-    try {
-      const path = await openDialog({
-        multiple: false,
-        filters: [
-          { name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"] },
-          { name: "PNG", extensions: ["png"] },
-          { name: "JPEG", extensions: ["jpg", "jpeg"] },
-        ],
-      });
+    let path: string | null;
+    if (providedPath === undefined) {
+      setDetecting(true);
+      try {
+        path = await openDialog({
+          multiple: false,
+          filters: [
+            { name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"] },
+            { name: "PNG", extensions: ["png"] },
+            { name: "JPEG", extensions: ["jpg", "jpeg"] },
+          ],
+        });
+      } finally {
+        setDetecting(false);
+      }
+      if (!path || typeof path !== "string") {
+        setStatus("Cancelled");
+        logger.logAction("detect_cancelled", "User cancelled detect file dialog");
+        return;
+      }
+    } else {
+      path = providedPath;
       if (!path || typeof path !== "string") return;
+    }
+    setDetecting(true);
+    logger.logAction("detect_started", "Decoding stego image", { path });
+    try {
       const result = await invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_image", { path });
       if (!result.ok || !result.payload) {
-        setDecodeError(result.error || "Decode failed");
+        const err = result.error || "Decode failed";
+        setDecodeError(err);
+        logger.logAction("detect_error", err, { path });
         return;
       }
       let jsonString: string;
@@ -586,37 +841,154 @@ function App() {
         const bytes = Uint8Array.from(atob(raw.slice(7)), (c) => c.charCodeAt(0));
         if (!stegoCrypto.isEncryptedPayload(bytes)) {
           setDecodeError("Not a Stegstr encrypted image");
+          logger.logAction("detect_error", "Not a Stegstr encrypted image", { path });
           return;
         }
-        jsonString = await stegoCrypto.decryptPayload(bytes, effectivePrivKey);
+        let keysToTry = identities
+          .filter((i) => viewingPubkeys.has(Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex))))
+          .map((i) => i.privKeyHex);
+        if (keysToTry.length === 0) keysToTry = [effectivePrivKey];
+        let lastErr: Error | null = null;
+        jsonString = "";
+        for (const key of keysToTry) {
+          try {
+            jsonString = await stegoCrypto.decryptPayload(bytes, key);
+            lastErr = null;
+            break;
+          } catch (e) {
+            lastErr = e instanceof Error ? e : new Error(String(e));
+          }
+        }
+        if (!jsonString && lastErr) {
+          try {
+            jsonString = await stegoCrypto.decryptApp(bytes);
+            const parsed = JSON.parse(jsonString);
+            if (typeof parsed === "object" && parsed !== null && Array.isArray(parsed.events)) lastErr = null;
+          } catch (_) {}
+        }
+        if (!jsonString) throw lastErr ?? new Error("Decryption failed");
       } else if (raw.trimStart().startsWith("{")) {
         jsonString = raw;
       } else {
         setDecodeError("Invalid payload");
+        logger.logAction("detect_error", "Invalid payload", { path });
         return;
       }
       const bundle = JSON.parse(jsonString) as NostrStateBundle;
-      if (bundle.events?.length) {
-        setEvents((prev) => {
-          const byId = new Map(prev.map((e) => [e.id, e]));
-          bundle.events.forEach((e) => byId.set(e.id, e));
-          return Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
-        });
-        setStatus(`Loaded ${bundle.events.length} events`);
-      } else setDecodeError("Invalid payload");
+      if (!Array.isArray(bundle.events)) {
+        setDecodeError("Invalid payload");
+        logger.logAction("detect_error", "Invalid payload (events not array)", { path });
+        return;
+      }
+      const normalized = bundle.events.map((e) => ({
+        ...e,
+        kind: typeof e.kind === "number" ? e.kind : parseInt(String(e.kind), 10) || 1,
+        created_at: typeof e.created_at === "number" ? e.created_at : Math.floor(Date.now() / 1000),
+      }));
+      setEvents((prev) => {
+        const byId = new Map(prev.map((e) => [e.id, e]));
+        normalized.forEach((e) => byId.set(e.id, e));
+        return Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
+      });
+      const profileUpdates: Record<string, { name?: string; about?: string; picture?: string; banner?: string; nip05?: string }> = {};
+      bundle.events.filter((e) => e.kind === 0).forEach((e) => {
+        try {
+          const raw = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
+          profileUpdates[e.pubkey] = {
+            name: raw.name ?? raw.display_name,
+            about: raw.about,
+            picture: raw.picture,
+            banner: raw.banner,
+            nip05: raw.nip05,
+          };
+        } catch (_) {}
+      });
+      if (Object.keys(profileUpdates).length > 0) {
+        setProfiles((p) => ({ ...p, ...profileUpdates }));
+      }
+      setView("feed");
+      setFeedFilter("global");
+      setSearchQuery("");
+      setStatus(`Loaded ${bundle.events.length} events`);
+      logger.logAction("detect_completed", `Loaded ${bundle.events.length} events`, { path, eventCount: bundle.events.length });
     } catch (e) {
-      setDecodeError((e as Error).message);
+      const msg = e instanceof Error ? e.message : String(e);
+      setDecodeError(msg);
+      logger.logError("Detect failed", e, { path });
+    } finally {
+      setDetecting(false);
     }
-  }, [effectivePrivKey]);
+  }, [effectivePrivKey, identities, viewingPubkeys]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    getCurrentWindow()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "drop" && event.payload.paths?.length) {
+          handleLoadFromImage(event.payload.paths[0]);
+        }
+      })
+      .then((fn) => { unlisten = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); };
+  }, [handleLoadFromImage]);
 
   const handleSaveToImage = useCallback(() => {
     setDecodeError("");
     setEmbedModalOpen(true);
   }, []);
 
+  const handleDetectFromExchange = useCallback(async () => {
+    try {
+      const path = await invoke<string>("get_exchange_path");
+      handleLoadFromImage(path);
+    } catch (e) {
+      setDecodeError(e instanceof Error ? e.message : String(e));
+    }
+  }, [handleLoadFromImage]);
+
+  const handleEmbedToExchange = useCallback(async () => {
+    if (!profile) return;
+    setDecodeError("");
+    setDetecting(true);
+    logger.logAction("embed_started", "Embed to exchange (quick test)", { eventCount: events.length });
+    try {
+      const coverPath = await openDialog({
+        multiple: false,
+        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"] }],
+      });
+      if (!coverPath || typeof coverPath !== "string") {
+        setDetecting(false);
+        return;
+      }
+      const outputPath = await invoke<string>("get_exchange_path");
+      const bundle: NostrStateBundle = { version: STEGSTR_BUNDLE_VERSION, events };
+      const jsonString = JSON.stringify(bundle);
+      const encrypted = await stegoCrypto.encryptOpen(jsonString);
+      const payloadToEmbed = "base64:" + uint8ArrayToBase64(encrypted);
+      const result = await invoke<{ ok: boolean; path?: string; error?: string }>("encode_stego_image", {
+        coverPath,
+        outputPath,
+        payload: payloadToEmbed,
+      });
+      if (result.ok && result.path) {
+        setStatus(`Saved to exchange. B can click Detect from exchange.`);
+        logger.logAction("embed_completed", "Embed to exchange done", { path: result.path, eventCount: events.length });
+      } else {
+        setDecodeError(result.error || "Encode failed");
+      }
+    } catch (e) {
+      setDecodeError(e instanceof Error ? e.message : String(e));
+      logger.logError("Embed to exchange failed", e, {});
+    } finally {
+      setDetecting(false);
+    }
+  }, [profile, events]);
+
   const handleEmbedConfirm = useCallback(async () => {
     if (!embedModalOpen) return;
     setDecodeError("");
+    logger.logAction("embed_started", "Starting embed flow", { eventCount: events.length });
     try {
       const coverPath = await openDialog({
         multiple: false,
@@ -626,20 +998,45 @@ function App() {
         setEmbedModalOpen(false);
         return;
       }
+      const coverName = coverPath.replace(/^.*[/\\]/, "").replace(/\.[^.]+$/, "") || "image";
+      let defaultPath = `${coverName}.png`;
+      try {
+        const desktop = await invoke<string>("get_desktop_path");
+        if (desktop) defaultPath = `${desktop}/${coverName}.png`;
+      } catch (_) {}
       const outputPath = await saveDialog({
         filters: [{ name: "PNG", extensions: ["png"] }],
-        defaultPath: "stegstr-export.png",
+        defaultPath,
       });
       if (!outputPath) {
         setEmbedModalOpen(false);
         return;
       }
-      const bundle: NostrStateBundle = { version: STEGSTR_BUNDLE_VERSION, events };
+      const finalOutputPath = outputPath.endsWith(".png") ? outputPath : outputPath + ".png";
+      const pubkeysInEmbed = new Set(events.flatMap((e) => [e.pubkey, ...e.tags.filter((t) => t[0] === "p").map((t) => t[1])]));
+      const kind0InEvents = new Set(events.filter((e) => e.kind === 0).map((e) => e.pubkey));
+      const syntheticKind0: NostrEvent[] = [];
+      for (const pk of pubkeysInEmbed) {
+        if (!pk || kind0InEvents.has(pk)) continue;
+        const idForPk = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === pk);
+        if (!idForPk) continue;
+        const prof = profiles[pk];
+        if (!prof) continue;
+        try {
+          const content = JSON.stringify(prof);
+          const ev = await Nostr.finishEventAsync(
+            { kind: 0, content, tags: [], created_at: Math.floor(Date.now() / 1000) },
+            Nostr.hexToBytes(idForPk.privKeyHex)
+          );
+          syntheticKind0.push(ev as NostrEvent);
+        } catch (_) {}
+      }
+      const bundle: NostrStateBundle = { version: STEGSTR_BUNDLE_VERSION, events: [...syntheticKind0, ...events] };
       const jsonString = JSON.stringify(bundle);
       let payloadToEmbed: string;
       if (embedMode === "open") {
         const encrypted = await stegoCrypto.encryptOpen(jsonString);
-        payloadToEmbed = "base64:" + btoa(String.fromCharCode(...encrypted));
+        payloadToEmbed = "base64:" + uint8ArrayToBase64(encrypted);
       } else {
         const recipients = Array.from(embedSelectedPubkeys);
         if (pubkey && !recipients.includes(pubkey)) recipients.push(pubkey);
@@ -648,21 +1045,32 @@ function App() {
           return;
         }
         const encrypted = await stegoCrypto.encryptForRecipients(jsonString, effectivePrivKey, recipients);
-        payloadToEmbed = "base64:" + btoa(String.fromCharCode(...encrypted));
+        payloadToEmbed = "base64:" + uint8ArrayToBase64(encrypted);
       }
       const result = await invoke<{ ok: boolean; path?: string; error?: string }>("encode_stego_image", {
         coverPath,
-        outputPath,
+        outputPath: finalOutputPath,
         payload: payloadToEmbed,
       });
       setEmbedModalOpen(false);
-      if (result.ok && result.path) setStatus(`Saved to ${result.path}`);
-      else setDecodeError(result.error || "Encode failed");
+      if (result.ok && result.path) {
+        setStatus(`Saved to ${result.path}. Finder opened.`);
+        logger.logAction("embed_completed", "Embed saved successfully", { path: result.path, eventCount: events.length });
+        try {
+          await invoke("reveal_in_finder", { path: result.path });
+        } catch (_) {}
+      } else {
+        const err = result.error || "Encode failed";
+        setDecodeError(err);
+        logger.logAction("embed_error", err, { coverPath, outputPath: finalOutputPath });
+      }
     } catch (e) {
-      setDecodeError((e as Error).message);
+      const msg = e instanceof Error ? e.message : String(e);
+      setDecodeError(msg);
+      logger.logError("Embed failed", e, {});
       setEmbedModalOpen(false);
     }
-  }, [embedModalOpen, embedMode, embedSelectedPubkeys, events, pubkey, effectivePrivKey]);
+  }, [embedModalOpen, embedMode, embedSelectedPubkeys, events, pubkey, effectivePrivKey, profiles, identities]);
 
   const toggleEmbedRecipient = useCallback((pk: string) => {
     setEmbedSelectedPubkeys((prev) => {
@@ -705,30 +1113,39 @@ function App() {
         setDmReplyContent("");
         if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Message sent");
+        logger.logAction("dm_send", "DM sent", { to: theirPubkeyHex.slice(0, 8) + "…", networkEnabled });
       } catch (e) {
         setStatus("Send failed: " + (e instanceof Error ? e.message : String(e)));
+        logger.logError("DM send failed", e, { to: theirPubkeyHex.slice(0, 8) + "…" });
       }
     },
     [effectivePrivKey, networkEnabled]
   );
 
   const handlePost = useCallback(async () => {
-    if (!effectivePrivKey || !newPost.trim()) return;
+    if (!effectivePrivKey) return;
+    const textPart = newPost.trim();
+    const mediaPart = postMediaUrls.length ? "\n" + postMediaUrls.join("\n") : "";
+    if (!textPart && !postMediaUrls.length) return;
     const sk = Nostr.hexToBytes(effectivePrivKey);
+    const content = ensureStegsterSuffix((textPart || " ") + mediaPart);
+    const tags: string[][] = postMediaUrls.flatMap((url) => [["im", url]]);
     const ev = await Nostr.finishEventAsync(
       {
         kind: 1,
-        content: ensureStegsterSuffix(newPost.trim()),
-        tags: [],
+        content,
+        tags,
         created_at: Math.floor(Date.now() / 1000),
       },
       sk
     );
     setEvents((prev) => [ev as NostrEvent, ...prev]);
     setNewPost("");
+    setPostMediaUrls([]);
     if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
     setStatus("Posted");
-  }, [effectivePrivKey, newPost, networkEnabled]);
+    logger.logAction("post", "Posted note", { networkEnabled, contentLength: content.length, mediaCount: postMediaUrls.length });
+  }, [effectivePrivKey, newPost, postMediaUrls, networkEnabled]);
 
   const handleLike = useCallback(
     async (note: NostrEvent) => {
@@ -750,8 +1167,10 @@ function App() {
         setEvents((prev) => [ev as NostrEvent, ...prev]);
         if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Liked");
+        logger.logAction("like", "Liked note", { noteId: note.id.slice(0, 8) + "…", networkEnabled });
       } catch (e) {
         setStatus("Like failed: " + (e instanceof Error ? e.message : String(e)));
+        logger.logError("Like failed", e, { noteId: note.id.slice(0, 8) + "…" });
       }
     },
     [effectivePrivKey, networkEnabled]
@@ -786,9 +1205,11 @@ function App() {
 
   const handleDelete = useCallback(
     async (note: NostrEvent) => {
-      if (!effectivePrivKey || !pubkey || note.pubkey !== pubkey) return;
+      if (!selfPubkeys.includes(note.pubkey)) return;
+      const identityForNote = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === note.pubkey);
+      const privToUse = identityForNote?.privKeyHex ?? effectivePrivKey;
       try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
+        const sk = Nostr.hexToBytes(privToUse);
         const ev = await Nostr.finishEventAsync(
           {
             kind: 5,
@@ -805,7 +1226,7 @@ function App() {
         setStatus("Delete failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, pubkey, networkEnabled]
+    [effectivePrivKey, identities, selfPubkeys, networkEnabled]
   );
 
   const handleBookmark = useCallback(
@@ -860,9 +1281,9 @@ function App() {
   const handleReply = useCallback(
     async () => {
       if (!effectivePrivKey || !replyingTo || !replyContent.trim()) return;
+      const rootId = getRootId(replyingTo);
       try {
         const sk = Nostr.hexToBytes(effectivePrivKey);
-        const rootId = getRootId(replyingTo);
         const tags: string[][] = [["e", rootId], ["e", replyingTo.id], ["p", replyingTo.pubkey]];
         const ev = await Nostr.finishEventAsync(
           {
@@ -878,8 +1299,10 @@ function App() {
         setReplyContent("");
         if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Replied");
+        logger.logAction("reply", "Replied to note", { rootId, networkEnabled });
       } catch (e) {
         setStatus("Reply failed: " + (e instanceof Error ? e.message : String(e)));
+        logger.logError("Reply failed", e, { rootId });
       }
     },
     [effectivePrivKey, replyingTo, replyContent, networkEnabled, getRootId]
@@ -918,7 +1341,7 @@ function App() {
     });
     setProfiles((p) => ({
       ...p,
-      [pubkey]: {
+      [(ev as NostrEvent).pubkey]: {
         name: editName.trim() || undefined,
         about: editAbout.trim() || undefined,
         picture: editPicture.trim() || undefined,
@@ -926,16 +1349,80 @@ function App() {
       },
     }));
     setEditProfileOpen(false);
-    if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
-    setStatus("Profile updated");
-  }, [effectivePrivKey, pubkey, editName, editAbout, editPicture, editBanner, networkEnabled]);
+    // Never publish kind 0 for Nostr identities—their profile lives on Nostr; publishing would overwrite it
+    const isNostr = actingIdentity?.type === "nostr";
+    if (networkEnabled && !isNostr) publishEvent(ev as NostrEvent, relayUrls);
+    setStatus(isNostr ? "Profile updated (local only)" : "Profile updated");
+    logger.logAction("profile_edit", isNostr ? "Profile updated (local only)" : "Profile updated", { networkEnabled, isNostr });
+  }, [effectivePrivKey, pubkey, editName, editAbout, editPicture, editBanner, networkEnabled, actingIdentity?.type]);
+
+  const handleEditPfpUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !file.type.startsWith("image/")) {
+      setStatus("Select an image file (jpg, png, gif, webp)");
+      return;
+    }
+    e.target.value = "";
+    setStatus("Uploading…");
+    try {
+      const url = await uploadMedia(file);
+      setEditPicture(url);
+      setStatus("Picture uploaded");
+    } catch (err) {
+      setStatus("Upload failed: " + (err instanceof Error ? err.message : String(err)));
+    }
+  }, []);
+
+  const handleEditCoverUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !file.type.startsWith("image/")) {
+      setStatus("Select an image file (jpg, png, gif, webp)");
+      return;
+    }
+    e.target.value = "";
+    setStatus("Uploading…");
+    try {
+      const url = await uploadMedia(file);
+      setEditBanner(url);
+      setStatus("Cover uploaded");
+    } catch (err) {
+      setStatus("Upload failed: " + (err instanceof Error ? err.message : String(err)));
+    }
+  }, []);
+
+  const handlePostMediaUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files?.length) return;
+    e.target.value = "";
+    setUploadingMedia(true);
+    setStatus("Uploading…");
+    try {
+      const urls: string[] = [];
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (file.type.startsWith("image/") || file.type.startsWith("video/")) {
+          const url = await uploadMedia(file);
+          urls.push(url);
+        }
+      }
+      setPostMediaUrls((prev) => [...prev, ...urls]);
+      setStatus(urls.length ? `Uploaded ${urls.length} file(s)` : "Select image or video files");
+    } catch (err) {
+      setStatus("Upload failed: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setUploadingMedia(false);
+    }
+  }, []);
 
   const handleFollow = useCallback(
     async (theirPk: string) => {
       if (!effectivePrivKey || !pubkey) return;
       const kind3 = events.find((e) => e.kind === 3 && e.pubkey === pubkey);
       const existingTags = kind3 ? kind3.tags.filter((t) => t[0] === "p") : [];
-      if (existingTags.some((t) => t[1] === theirPk)) return;
+      if (existingTags.some((t) => t[1] === theirPk)) {
+        setStatus("Already following");
+        return;
+      }
       try {
         const sk = Nostr.hexToBytes(effectivePrivKey);
         const newTags = [...existingTags.map((t) => ["p", t[1]]), ["p", theirPk]];
@@ -946,8 +1433,10 @@ function App() {
         setEvents((prev) => prev.filter((e) => !(e.kind === 3 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
         if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Following");
+        logger.logAction("follow", "Followed pubkey", { theirPk: theirPk.slice(0, 8) + "…", networkEnabled });
       } catch (e) {
         setStatus("Follow failed: " + (e instanceof Error ? e.message : String(e)));
+        logger.logError("Follow failed", e, { theirPk: theirPk.slice(0, 8) + "…" });
       }
     },
     [effectivePrivKey, pubkey, events, networkEnabled]
@@ -976,10 +1465,10 @@ function App() {
   );
 
   useEffect(() => {
-    if (!privKeyHex || hasSyncedAnonRef.current) return;
+    if (!actingIdentity || actingIdentity.type !== "nostr" || hasSyncedAnonRef.current) return;
     hasSyncedAnonRef.current = true;
-    const anonPubkey = Nostr.getPublicKey(Nostr.hexToBytes(getOrCreateAnonKey()));
-    const sk = Nostr.hexToBytes(privKeyHex);
+    const sk = Nostr.hexToBytes(actingIdentity.privKeyHex);
+    const anonPubkey = Nostr.getPublicKey(Nostr.hexToBytes(getOrCreateAnonKey(profile)));
     let cancelled = false;
     (async () => {
       const anonEvents = events.filter((e) => e.pubkey === anonPubkey);
@@ -1006,13 +1495,13 @@ function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [privKeyHex]);
+  }, [actingIdentity, events, profile]);
 
   return (
     <main className="app-root primal-layout">
       <header className="top-header">
         <h1 className="app-title">
-          <img src="/steg.png" alt="" className="app-logo" />
+          <img src="/LOGO.png" alt="" className="app-logo" />
           Stegstr
         </h1>
         <div className="header-actions">
@@ -1031,6 +1520,11 @@ function App() {
             </button>
             <span className="network-status">{networkEnabled ? "ON" : "OFF"}</span>
           </div>
+          {actingIdentity && (
+            <span className="acting-identity" title={`Acting as ${profiles[actingPubkey ?? ""]?.name || actingIdentity.label}`}>
+              as {profiles[actingPubkey ?? ""]?.name || actingIdentity.label}
+            </span>
+          )}
           {relayStatus && <span className="relay-status">{relayStatus}</span>}
         </div>
       </header>
@@ -1058,18 +1552,39 @@ function App() {
             <strong className="profile-name">{myName}</strong>
             {myAbout && <p className="profile-about">{myAbout.slice(0, 120)}{myAbout.length > 120 ? "…" : ""}</p>}
             {isNostrLoggedIn ? (
-              <p className="profile-note">From your Nostr profile (kind 0)</p>
+              !myProfile?.name && !myProfile?.picture && !myProfile?.about ? (
+                <>
+                  <p className="profile-note muted">{networkEnabled ? "Fetching profile from relays…" : "Turn Network ON to fetch profile"}</p>
+                  {networkEnabled && actingPubkey && (
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ marginTop: "0.5rem" }}
+                      onClick={() => {
+                        relayRef.current?.requestProfiles([actingPubkey]);
+                        relayRef.current?.requestAuthor(actingPubkey);
+                        setStatus("Refreshing profile…");
+                      }}
+                    >
+                      Refresh profile
+                    </button>
+                  )}
+                </>
+              ) : (
+                <p className="profile-note muted">From Nostr</p>
+              )
             ) : (
-              <p className="profile-note muted">Local identity · Log in to sync to Nostr</p>
+              <p className="profile-note muted">Local identity · Add Nostr to sync</p>
             )}
             {isNostrLoggedIn ? (
-              <button type="button" className="btn-secondary" onClick={handleEditProfileOpen}>Edit profile</button>
+              <p className="profile-note muted">Nostr profile is from relays. Update via a Nostr client.</p>
             ) : (
-              <button type="button" className="btn-primary" onClick={() => setLoginFormOpen(true)}>Log in with Nostr</button>
+              <button type="button" className="btn-secondary" onClick={handleEditProfileOpen}>Edit profile</button>
             )}
           </div>
           <nav className="side-nav">
             <button type="button" className={view === "feed" ? "active" : ""} onClick={() => setView("feed")}>Home</button>
+            <button type="button" className={view === "identity" ? "active" : ""} onClick={() => setView("identity")}>Identity</button>
             <button type="button" className={view === "notifications" ? "active" : ""} onClick={() => setView("notifications")}>Notifications</button>
             <button type="button" className={view === "messages" ? "active" : ""} onClick={() => setView("messages")}>Messages</button>
             <button type="button" className={view === "profile" ? "active" : ""} onClick={() => { setViewingProfilePubkey(null); setView("profile"); }}>Profile</button>
@@ -1096,8 +1611,28 @@ function App() {
                     className="wide"
                     maxLength={MAX_NOTE_USER_CONTENT}
                   />
-                  <p className="muted char-counter">{newPost.length}/{MAX_NOTE_USER_CONTENT} (Stegstr appends &quot; Stegster&quot;)</p>
-                  <button type="button" onClick={handlePost} className="btn-primary">Post</button>
+                  {postMediaUrls.length > 0 && (
+                    <div className="post-media-preview">
+                      {postMediaUrls.map((url, i) => (
+                        <span key={i} className="post-media-item">
+                          {url.match(/\.(gif|jpg|jpeg|png|webp)(\?|$)/i) ? (
+                            <img src={url} alt="" />
+                          ) : (
+                            <a href={url} target="_blank" rel="noreferrer">{url.slice(0, 40)}…</a>
+                          )}
+                          <button type="button" className="btn-remove muted" onClick={() => setPostMediaUrls((p) => p.filter((_, j) => j !== i))}>×</button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="compose-actions">
+                    <input ref={postMediaInputRef} type="file" accept="image/*,video/*" multiple className="hidden-input" onChange={handlePostMediaUpload} />
+                    <button type="button" className="btn-secondary" onClick={() => postMediaInputRef.current?.click()} disabled={uploadingMedia} title="Add photo or video">
+                      {uploadingMedia ? "Uploading…" : "Attach"}
+                    </button>
+                    <button type="button" onClick={handlePost} className="btn-primary" disabled={(!newPost.trim() && postMediaUrls.length === 0) || uploadingMedia}>Post</button>
+                  </div>
+                  <p className="muted char-counter">{newPost.length}/{MAX_NOTE_USER_CONTENT} (appends &quot; Sent by Stegstr.&quot;)</p>
                 </div>
               </section>
 
@@ -1112,14 +1647,59 @@ function App() {
                 {notes.length === 0 && (
                   <p className="muted">No notes yet. Turn Network ON for relay feed, or load from image.</p>
                 )}
-                {searchTrim && feedItems.length === 0 && (
-                  <p className="muted">
-                    {searchPubkeyHex || npubStr
+                {searchTrim && (
+                  <>
+                    {(() => {
+                      const profileMatches = Object.entries(profiles).filter(
+                        ([pk, p]) => pk !== pubkey &&
+                          ((searchPubkeyHex && pk === searchPubkeyHex) ||
+                            p?.name?.toLowerCase().includes(searchLower) ||
+                            p?.nip05?.toLowerCase().includes(searchLower) ||
+                            pk.toLowerCase().includes(searchNoSpaces.toLowerCase()))
+                      );
+                      if (searchPubkeyHex && profileMatches.length === 0 && feedItems.length === 0 && !profiles[searchPubkeyHex]) {
+                        return (
+                          <div className="profile-result-card">
+                            <p className="muted">No notes from this pubkey. View profile to follow.</p>
+                            <button type="button" className="btn-primary" onClick={() => { setViewingProfilePubkey(searchPubkeyHex); setView("profile"); }}>
+                              View profile ({searchPubkeyHex.slice(0, 12)}…)
+                            </button>
+                          </div>
+                        );
+                      }
+                      if (profileMatches.length > 0) {
+                        return (
+                          <div className="search-profiles-section">
+                            <h3 className="search-section-title">Profiles</h3>
+                            <ul className="profile-result-list">
+                              {profileMatches.slice(0, 10).map(([pk, p]) => (
+                                <li key={pk} className="profile-result-item">
+                                  {p?.picture ? <img src={p.picture} alt="" className="contact-avatar" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span className="contact-avatar placeholder">{(p?.name ?? pk).slice(0, 2)}</span>}
+                                  <div className="profile-result-info">
+                                    <strong>{p?.name ?? `${pk.slice(0, 12)}…`}</strong>
+                                    {p?.nip05 && <span className="muted"> {p.nip05}</span>}
+                                  </div>
+                                  <button type="button" className="btn-primary" onClick={() => { setViewingProfilePubkey(pk); setView("profile"); }}>View profile</button>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        );
+                      }
+                      if (feedItems.length === 0) {
+                        return (
+                          <p className="muted">
+                            {searchPubkeyHex || npubStr
                       ? networkEnabled
                         ? "No notes from this pubkey yet. If we just fetched, wait a moment; otherwise they may have no public notes on these relays."
                         : "Turn Network ON to fetch this pubkey’s notes from relays, or load an image that contains their posts."
                       : "No notes match your search."}
-                  </p>
+                          </p>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </>
                 )}
                 <ul className="note-list">
                   {(() => {
@@ -1171,6 +1751,9 @@ function App() {
                                 <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(ev.pubkey); setView("profile"); }}>
                                   {(profiles[ev.pubkey]?.name ?? `${ev.pubkey.slice(0, 8)}…`)}
                                 </button>
+                                {selfPubkeys.includes(ev.pubkey) && getIdentityLabelsForPubkey(ev.pubkey).map((l) => (
+                                  <span key={l} className="event-identity-tag">{l}</span>
+                                ))}
                               </strong>
                               <span className="note-time">{new Date(ev.created_at * 1000).toLocaleString()}</span>
                             </div>
@@ -1179,15 +1762,19 @@ function App() {
                                 <p>{contentWithoutImages(ev.content).trim() || ev.content}</p>
                               )}
                               {(() => {
-                                const tagImg = imageUrlFromTags(ev.tags);
-                                const urls = extractImageUrls(ev.content);
-                                const imgs = tagImg ? [tagImg, ...urls] : urls;
-                                if (imgs.length === 0) return null;
+                                const tagMedia = mediaUrlsFromTags(ev.tags);
+                                const contentUrls = extractImageUrls(ev.content);
+                                const urls = tagMedia.length > 0 ? tagMedia : contentUrls;
+                                if (urls.length === 0) return null;
                                 return (
                                   <div className="note-images">
-                                    {imgs.slice(0, 4).map((url, i) => (
-                                      <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                                    ))}
+                                    {urls.slice(0, 4).map((url, i) =>
+                                      isVideoUrl(url) ? (
+                                        <video key={i} src={url} controls className="note-img note-video" />
+                                      ) : (
+                                        <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                                      )
+                                    )}
                                   </div>
                                 );
                               })()}
@@ -1198,7 +1785,7 @@ function App() {
                               <button type="button" onClick={() => handleRepost(ev)} title="Repost">Repost</button>
                               <button type="button" onClick={() => window.open(`https://zap.stream/e/${ev.id}`, "_blank", "noopener")} title="Zap (opens zap.stream)">Zap <span className="count">({getZapCount(ev.id)})</span></button>
                               <button type="button" onClick={() => hasBookmarked(ev.id) ? handleUnbookmark(ev) : handleBookmark(ev)} title={hasBookmarked(ev.id) ? "Remove bookmark" : "Bookmark"}>{hasBookmarked(ev.id) ? "Unbookmark" : "Bookmark"}</button>
-                              {ev.pubkey === pubkey && <button type="button" className="btn-delete muted" onClick={() => handleDelete(ev)} title="Delete">Delete</button>}
+                              {selfPubkeys.includes(ev.pubkey) && <button type="button" className="btn-delete muted" onClick={() => handleDelete(ev)} title="Delete">Delete</button>}
                             </div>
                           </div>
                         </div>
@@ -1231,6 +1818,9 @@ function App() {
                                     <strong>
                                       <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(reply.pubkey); setView("profile"); }}>
                                         {(profiles[reply.pubkey]?.name ?? `${reply.pubkey.slice(0, 8)}…`)}
+                                        {selfPubkeys.includes(reply.pubkey) && getIdentityLabelsForPubkey(reply.pubkey).map((l) => (
+                                          <span key={l} className="event-identity-tag">{l}</span>
+                                        ))}
                                       </button>
                                     </strong>
                                     <span className="note-time">{new Date(reply.created_at * 1000).toLocaleString()}</span>
@@ -1244,7 +1834,7 @@ function App() {
                                     <button type="button" onClick={() => handleRepost(reply)} title="Repost">Repost</button>
                                     <button type="button" onClick={() => window.open(`https://zap.stream/e/${reply.id}`, "_blank", "noopener")} title="Zap (opens zap.stream)">Zap <span className="count">({getZapCount(reply.id)})</span></button>
                                     <button type="button" onClick={() => hasBookmarked(reply.id) ? handleUnbookmark(reply) : handleBookmark(reply)} title={hasBookmarked(reply.id) ? "Remove bookmark" : "Bookmark"}>{hasBookmarked(reply.id) ? "Unbookmark" : "Bookmark"}</button>
-                                    {reply.pubkey === pubkey && <button type="button" className="btn-delete muted" onClick={() => handleDelete(reply)} title="Delete">Delete</button>}
+                                    {selfPubkeys.includes(reply.pubkey) && <button type="button" className="btn-delete muted" onClick={() => handleDelete(reply)} title="Delete">Delete</button>}
                                   </div>
                                 </div>
                                 {replyingTo?.id === reply.id && (
@@ -1352,11 +1942,11 @@ function App() {
           {view === "followers" && (
             <section className="followers-view">
               <h2>Following</h2>
-              <p className="muted">From your Nostr contact list (kind 3). Unfollow to remove; search below to add.</p>
+              <p className="muted">From your Nostr contact list (kind 3). Unfollow to remove; search below to add by npub, hex pubkey, or name.</p>
               <div className="following-add-wrap">
                 <input
                   type="text"
-                  placeholder="npub or hex pubkey to follow…"
+                  placeholder="npub, hex pubkey, or name to follow…"
                   value={followingSearchInput}
                   onChange={(e) => setFollowingSearchInput(e.target.value)}
                   className="wide"
@@ -1364,7 +1954,14 @@ function App() {
                     if (e.key === "Enter") {
                       const pk = resolvePubkeyFromInput(followingSearchInput);
                       if (pk) { handleFollow(pk); setFollowingSearchInput(""); relayRef.current?.requestProfiles([pk]); }
-                      else if (followingSearchInput.trim()) setStatus("Enter a valid npub or 64-char hex pubkey");
+                      else if (followingSearchInput.trim()) {
+                        const matches = Object.entries(profiles).filter(
+                          ([pk, p]) => pk !== pubkey && !contactsSet.has(pk) &&
+                            (p?.name?.toLowerCase().includes(followingSearchInput.trim().toLowerCase()) ||
+                              p?.nip05?.toLowerCase().includes(followingSearchInput.trim().toLowerCase()))
+                        );
+                        if (matches.length === 0) setStatus("No match. Enter npub, hex pubkey, or try a name from your feed.");
+                      }
                     }
                   }}
                 />
@@ -1374,14 +1971,45 @@ function App() {
                   onClick={() => {
                     const pk = resolvePubkeyFromInput(followingSearchInput);
                     if (pk) { handleFollow(pk); setFollowingSearchInput(""); relayRef.current?.requestProfiles([pk]); }
-                    else if (followingSearchInput.trim()) setStatus("Enter a valid npub or 64-char hex pubkey");
+                    else if (followingSearchInput.trim()) {
+                      const matches = Object.entries(profiles).filter(
+                        ([pk, p]) => pk !== pubkey && !contactsSet.has(pk) &&
+                          (p?.name?.toLowerCase().includes(followingSearchInput.trim().toLowerCase()) ||
+                            p?.nip05?.toLowerCase().includes(followingSearchInput.trim().toLowerCase()))
+                      );
+                      if (matches.length === 0) setStatus("No match. Enter npub, hex pubkey, or try a name from your feed.");
+                    }
                   }}
                 >
                   Add
                 </button>
               </div>
+              {followingSearchInput.trim() && !resolvePubkeyFromInput(followingSearchInput) && (() => {
+                const matches = Object.entries(profiles).filter(
+                  ([pk, p]) => pk !== pubkey && !contactsSet.has(pk) &&
+                    (p?.name?.toLowerCase().includes(followingSearchInput.trim().toLowerCase()) ||
+                      p?.nip05?.toLowerCase().includes(followingSearchInput.trim().toLowerCase()))
+                );
+                if (matches.length === 0) return null;
+                return (
+                  <div className="search-results profiles-search">
+                    <p className="muted">Profiles matching &quot;{followingSearchInput.trim()}&quot;</p>
+                    <ul className="contact-list">
+                      {matches.map(([pk, p]) => (
+                        <li key={pk} className="contact-list-item">
+                          {p?.picture ? <img src={p.picture} alt="" className="contact-avatar" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span className="contact-avatar placeholder">{(p?.name ?? pk).slice(0, 2)}</span>}
+                          <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(pk); setView("profile"); }}>
+                            {p?.name ?? `${pk.slice(0, 12)}…`}
+                          </button>
+                          <button type="button" className="btn-primary" onClick={() => { handleFollow(pk); setFollowingSearchInput(""); relayRef.current?.requestProfiles([pk]); setStatus("Following"); }}>Add</button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })()}
               <ul className="contact-list">
-                {contacts.map((pk) => (
+                {[...contactsSet].map((pk) => (
                   <li key={pk} className="contact-list-item">
                     {profiles[pk]?.picture ? <img src={profiles[pk].picture!} alt="" className="contact-avatar" /> : <span className="contact-avatar placeholder">{pk.slice(0, 2)}</span>}
                     <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(pk); setView("profile"); }}>
@@ -1391,7 +2019,7 @@ function App() {
                   </li>
                 ))}
               </ul>
-              {contacts.length === 0 && <p className="muted">No one yet. Use the search above to add people.</p>}
+              {contactsSet.size === 0 && <p className="muted">No one yet. Use the search above to add people.</p>}
             </section>
           )}
 
@@ -1422,15 +2050,19 @@ function App() {
                           <div className="note-content">
                             {(contentWithoutImages(ev.content).trim() || ev.content.trim()) && <p>{contentWithoutImages(ev.content).trim() || ev.content}</p>}
                             {(() => {
-                              const tagImg = imageUrlFromTags(ev.tags);
-                              const urls = extractImageUrls(ev.content);
-                              const imgs = tagImg ? [tagImg, ...urls] : urls;
-                              if (imgs.length === 0) return null;
+                              const tagMedia = mediaUrlsFromTags(ev.tags);
+                              const contentUrls = extractImageUrls(ev.content);
+                              const urls = tagMedia.length > 0 ? tagMedia : contentUrls;
+                              if (urls.length === 0) return null;
                               return (
                                 <div className="note-images">
-                                  {imgs.slice(0, 4).map((url, i) => (
-                                    <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                                  ))}
+                                  {urls.slice(0, 4).map((url, i) =>
+                                    isVideoUrl(url) ? (
+                                      <video key={i} src={url} controls className="note-img note-video" />
+                                    ) : (
+                                      <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                                    )
+                                  )}
                                 </div>
                               );
                             })()}
@@ -1497,15 +2129,19 @@ function App() {
                           <div className="note-content">
                             {(contentWithoutImages(ev.content).trim() || ev.content.trim()) && <p>{contentWithoutImages(ev.content).trim() || ev.content}</p>}
                             {(() => {
-                              const tagImg = imageUrlFromTags(ev.tags);
-                              const urls = extractImageUrls(ev.content);
-                              const imgs = tagImg ? [tagImg, ...urls] : urls;
-                              if (imgs.length === 0) return null;
+                              const tagMedia = mediaUrlsFromTags(ev.tags);
+                              const contentUrls = extractImageUrls(ev.content);
+                              const urls = tagMedia.length > 0 ? tagMedia : contentUrls;
+                              if (urls.length === 0) return null;
                               return (
                                 <div className="note-images">
-                                  {imgs.slice(0, 4).map((url, i) => (
-                                    <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                                  ))}
+                                  {urls.slice(0, 4).map((url, i) =>
+                                    isVideoUrl(url) ? (
+                                      <video key={i} src={url} controls className="note-img note-video" />
+                                    ) : (
+                                      <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                                    )
+                                  )}
                                 </div>
                               );
                             })()}
@@ -1515,7 +2151,7 @@ function App() {
                             <button type="button" onClick={() => !hasLiked(ev.id) && handleLike(ev)} title="Like" disabled={!!hasLiked(ev.id)}>{hasLiked(ev.id) ? "Liked" : "Like"} <span className="count">({likeCount})</span></button>
                             <button type="button" onClick={() => handleRepost(ev)} title="Repost">Repost</button>
                             <button type="button" onClick={() => handleUnbookmark(ev)} title="Remove bookmark">Unbookmark</button>
-                            {ev.pubkey === pubkey && <button type="button" className="btn-delete muted" onClick={() => handleDelete(ev)} title="Delete">Delete</button>}
+                            {selfPubkeys.includes(ev.pubkey) && <button type="button" className="btn-delete muted" onClick={() => handleDelete(ev)} title="Delete">Delete</button>}
                           </div>
                         </div>
                       </div>
@@ -1585,7 +2221,7 @@ function App() {
                 <button type="button" className="btn-back" onClick={() => setViewingProfilePubkey(null)} style={{ marginBottom: "0.5rem" }}>← Back to feed</button>
               )}
               <div className="profile-header-card">
-                {(profiles[profileViewPubkey]?.banner ?? (profileViewPubkey === pubkey ? myBanner : null)) ? (
+                {(profiles[profileViewPubkey]?.banner ?? (profileViewPubkey === profileDisplayKey ? myBanner : null)) ? (
                   <div className="profile-banner-wrap">
                     <img src={profiles[profileViewPubkey]?.banner ?? myBanner!} alt="" className="profile-banner" />
                   </div>
@@ -1593,28 +2229,43 @@ function App() {
                   <div className="profile-banner-placeholder" />
                 )}
                 <div className="profile-header-body">
-                  {profiles[profileViewPubkey]?.picture ?? (profileViewPubkey === pubkey ? myPicture : null) ? (
+                  {profiles[profileViewPubkey]?.picture ?? (profileViewPubkey === profileDisplayKey ? myPicture : null) ? (
                     <img src={(profiles[profileViewPubkey]?.picture ?? myPicture)!} alt="" className="profile-avatar profile-avatar-overlay" />
                   ) : (
-                    <div className="profile-avatar profile-avatar-overlay placeholder">{(profiles[profileViewPubkey]?.name ?? (profileViewPubkey === pubkey ? myName : profileViewPubkey)).slice(0, 1)}</div>
+                    <div className="profile-avatar profile-avatar-overlay placeholder">{(profiles[profileViewPubkey]?.name ?? (profileViewPubkey === profileDisplayKey ? myName : profileViewPubkey)).slice(0, 1)}</div>
                   )}
-                  <strong className="profile-name">{(profileViewPubkey === pubkey ? myName : (profiles[profileViewPubkey]?.name ?? `${profileViewPubkey.slice(0, 8)}…`))}</strong>
-                  <p className="profile-note pubkey-display">npub…{profileViewPubkey.slice(-12)}</p>
-                  {(profiles[profileViewPubkey]?.nip05 ?? (profileViewPubkey === pubkey && myProfile?.nip05)) && (
-                    <p className="profile-note profile-nip05 muted">{(profileViewPubkey === pubkey ? myProfile?.nip05 : profiles[profileViewPubkey]?.nip05)}</p>
+                  <strong className="profile-name">{(profileViewPubkey === profileDisplayKey ? myName : (profiles[profileViewPubkey]?.name ?? `${profileViewPubkey.slice(0, 8)}…`))}</strong>
+                  <p
+                    className="profile-note pubkey-display pubkey-copy"
+                    title="Click to copy"
+                    onClick={async () => {
+                      const npub = Nostr.nip19.npubEncode(profileViewPubkey);
+                      await navigator.clipboard.writeText(npub);
+                      setStatus("Copied!");
+                      setTimeout(() => setStatus(""), 1500);
+                    }}
+                  >
+                    {Nostr.nip19.npubEncode(profileViewPubkey)}
+                  </p>
+                  {(profiles[profileViewPubkey]?.nip05 ?? (profileViewPubkey === profileDisplayKey && myProfile?.nip05)) && (
+                    <p className="profile-note profile-nip05 muted">{(profileViewPubkey === profileDisplayKey ? myProfile?.nip05 : profiles[profileViewPubkey]?.nip05)}</p>
                   )}
-                  {(profiles[profileViewPubkey]?.about ?? (profileViewPubkey === pubkey ? myAbout : "")) && (
-                    <p className="profile-about">{(profileViewPubkey === pubkey ? myAbout : profiles[profileViewPubkey]?.about) ?? ""}</p>
+                  {(profiles[profileViewPubkey]?.about ?? (profileViewPubkey === profileDisplayKey ? myAbout : "")) && (
+                    <p className="profile-about">{(profileViewPubkey === profileDisplayKey ? myAbout : profiles[profileViewPubkey]?.about) ?? ""}</p>
                   )}
                   <div className="profile-stats">
                     <span><strong>{profileRootNotes.length}</strong> posts</span>
                     <span><strong>{profileFollowing.length}</strong> following</span>
                     <span><strong>{profileFollowers.length}</strong> followers</span>
                   </div>
-                  {profileViewPubkey === pubkey ? (
-                    <button type="button" className="btn-secondary" onClick={handleEditProfileOpen}>Edit profile</button>
+                  {profileViewPubkey === profileDisplayKey ? (
+                    isNostrLoggedIn ? (
+                      <p className="profile-note muted">Your Nostr profile is fetched from relays. To update it, use a Nostr client (e.g. Damus, Primal).</p>
+                    ) : (
+                      <button type="button" className="btn-secondary" onClick={handleEditProfileOpen}>Edit profile</button>
+                    )
                   ) : (
-                    contacts.includes(profileViewPubkey)
+                    contactsSet.has(profileViewPubkey)
                       ? <button type="button" className="btn-secondary" onClick={() => handleUnfollow(profileViewPubkey)}>Unfollow</button>
                       : <button type="button" className="btn-primary" onClick={() => handleFollow(profileViewPubkey)}>Follow</button>
                   )}
@@ -1640,15 +2291,19 @@ function App() {
                           <div className="note-content">
                             {(contentWithoutImages(ev.content).trim() || ev.content.trim()) && <p>{contentWithoutImages(ev.content).trim() || ev.content}</p>}
                             {(() => {
-                              const tagImg = imageUrlFromTags(ev.tags);
-                              const urls = extractImageUrls(ev.content);
-                              const imgs = tagImg ? [tagImg, ...urls] : urls;
-                              if (imgs.length === 0) return null;
+                              const tagMedia = mediaUrlsFromTags(ev.tags);
+                              const contentUrls = extractImageUrls(ev.content);
+                              const urls = tagMedia.length > 0 ? tagMedia : contentUrls;
+                              if (urls.length === 0) return null;
                               return (
                                 <div className="note-images">
-                                  {imgs.slice(0, 4).map((url, i) => (
-                                    <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                                  ))}
+                                  {urls.slice(0, 4).map((url, i) =>
+                                    isVideoUrl(url) ? (
+                                      <video key={i} src={url} controls className="note-img note-video" />
+                                    ) : (
+                                      <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                                    )
+                                  )}
                                 </div>
                               );
                             })()}
@@ -1658,7 +2313,7 @@ function App() {
                             <button type="button" onClick={() => !hasLiked(ev.id) && handleLike(ev)} title="Like" disabled={!!hasLiked(ev.id)}>{hasLiked(ev.id) ? "Liked" : "Like"} <span className="count">({likeCount})</span></button>
                             <button type="button" onClick={() => window.open(`https://zap.stream/e/${ev.id}`, "_blank", "noopener")} title="Zap (opens zap.stream)">Zap <span className="count">({getZapCount(ev.id)})</span></button>
                             <button type="button" onClick={() => hasBookmarked(ev.id) ? handleUnbookmark(ev) : handleBookmark(ev)} title={hasBookmarked(ev.id) ? "Remove bookmark" : "Bookmark"}>{hasBookmarked(ev.id) ? "Unbookmark" : "Bookmark"}</button>
-                            {ev.pubkey === pubkey && <button type="button" className="btn-delete muted" onClick={() => handleDelete(ev)} title="Delete">Delete</button>}
+                            {selfPubkeys.includes(ev.pubkey) && <button type="button" className="btn-delete muted" onClick={() => handleDelete(ev)} title="Delete">Delete</button>}
                           </div>
                         </div>
                       </div>
@@ -1713,9 +2368,129 @@ function App() {
             </section>
           )}
 
+          {view === "identity" && (
+            <section className="identity-view">
+              <h2>Identity</h2>
+              <p className="muted">Check identities to view their content; choose one as acting for new posts, replies, and DMs.</p>
+              <div className="identity-actions">
+                <button type="button" className="btn-primary" onClick={handleGenerate}>Create local identity</button>
+                <button type="button" className="btn-secondary" onClick={() => setLoginFormOpen(true)}>Add Nostr identity</button>
+              </div>
+              <ul className="identity-list">
+                {identities.map((id) => {
+                  const pk = Nostr.getPublicKey(Nostr.hexToBytes(id.privKeyHex));
+                  const isViewing = viewingPubkeys.has(pk);
+                  const isActing = actingPubkey === pk;
+                  const displayLabel = profiles[pk]?.name || id.label || pk.slice(0, 8) + "…";
+                  return (
+                    <li key={id.id} className="identity-item">
+                      <label className="identity-viewing">
+                        <input
+                          type="checkbox"
+                          checked={isViewing}
+                          onChange={() => {
+                            setViewingPubkeys((prev) => {
+                              const next = new Set(prev);
+                              if (isViewing) next.delete(pk);
+                              else next.add(pk);
+                              return next;
+                            });
+                          }}
+                        />
+                        View
+                      </label>
+                      <label className="identity-acting">
+                        <input
+                          type="radio"
+                          name="acting"
+                          checked={isActing}
+                          onChange={() => setActingPubkey(pk)}
+                        />
+                        Act
+                      </label>
+                      <span className="identity-label">{displayLabel}</span>
+                      <span
+                        className="identity-pubkey pubkey-copy muted"
+                        title="Click to copy npub"
+                        onClick={async () => {
+                          const npub = Nostr.nip19.npubEncode(pk);
+                          await navigator.clipboard.writeText(npub);
+                          setStatus("Copied!");
+                          setTimeout(() => setStatus(""), 1500);
+                        }}
+                      >
+                        {Nostr.nip19.npubEncode(pk)}
+                      </span>
+                      <span className="identity-type muted">({id.type})</span>
+                      <label className="identity-private">
+                        <input
+                          type="checkbox"
+                          checked={!!id.isPrivate}
+                          onChange={() => {
+                            setIdentities((prev) =>
+                              prev.map((i) => (i.id === id.id ? { ...i, isPrivate: !i.isPrivate } : i))
+                            );
+                          }}
+                        />
+                        Private
+                      </label>
+                      {identities.length > 1 && (
+                        <button
+                          type="button"
+                          className="btn-delete muted"
+                          onClick={() => {
+                            const remaining = identities.filter((i) => i.id !== id.id);
+                            setIdentities(remaining);
+                            setViewingPubkeys((prev) => { const n = new Set(prev); n.delete(pk); return n; });
+                            if (isActing && remaining[0]) setActingPubkey(Nostr.getPublicKey(Nostr.hexToBytes(remaining[0].privKeyHex)));
+                          }}
+                          title="Remove identity"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              {identities.some((i) => i.isPrivate) && (
+                <div className="identity-follow-requests">
+                  <h3 className="profile-section-title">Follow requests</h3>
+                  <p className="muted">When your profile is private, only approved followers can view. Follow requests will appear here when a NIP for follow requests is supported.</p>
+                </div>
+              )}
+            </section>
+          )}
+
           {view === "settings" && (
             <section className="settings-view">
               <h2>Settings</h2>
+              <h3 className="settings-section">Identities</h3>
+              <p className="muted">Public keys (npub). Click to copy.</p>
+              <ul className="settings-list">
+                {identities.map((id) => {
+                  const pk = Nostr.getPublicKey(Nostr.hexToBytes(id.privKeyHex));
+                  const label = profiles[pk]?.name || id.label || pk.slice(0, 8) + "…";
+                  return (
+                    <li key={id.id} className="settings-list-item settings-identity-item">
+                      <span className="muted">{label}</span>
+                      <span
+                        className="pubkey-copy muted"
+                        style={{ fontFamily: "monospace", fontSize: "0.8rem", wordBreak: "break-all" }}
+                        title="Click to copy npub"
+                        onClick={async () => {
+                          const npub = Nostr.nip19.npubEncode(pk);
+                          await navigator.clipboard.writeText(npub);
+                          setStatus("Copied!");
+                          setTimeout(() => setStatus(""), 1500);
+                        }}
+                      >
+                        {Nostr.nip19.npubEncode(pk)}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
               <h3 className="settings-section">Relays</h3>
               <p className="muted">Relays used for feed and publish. Add or remove below.</p>
               <div className="mute-add-wrap">
@@ -1836,9 +2611,19 @@ function App() {
           <div className="widget steganography-widget">
             <h3>Steganography</h3>
             <p className="muted">Detect image: load an image to extract data. Embed image: save your feed and messages to an image to share.</p>
+            <div className="stego-drop-zone" aria-label="Drop image here to detect">
+              Drop image here to detect
+            </div>
+            {detecting && <p className="muted detect-status">Decoding…</p>}
             <div className="stego-actions">
-              <button type="button" className="btn-stego" onClick={handleLoadFromImage}>Detect image</button>
-              <button type="button" className="btn-stego btn-primary" onClick={handleSaveToImage}>Embed image</button>
+              <button type="button" className="btn-stego" onClick={() => handleLoadFromImage()} disabled={detecting}>Detect image</button>
+              <button type="button" className="btn-stego btn-primary" onClick={handleSaveToImage} disabled={detecting}>Embed image</button>
+              {profile != null && (
+                <>
+                  <button type="button" className="btn-stego btn-quick-test" onClick={handleDetectFromExchange} disabled={detecting} title="1-click: detect from /tmp/stegstr-test-exchange/exchange.png">Detect from exchange</button>
+                  <button type="button" className="btn-stego btn-quick-test" onClick={handleEmbedToExchange} disabled={detecting} title="2-click: pick cover → save to exchange path">Embed to exchange</button>
+                </>
+              )}
             </div>
           </div>
         </aside>
@@ -1846,13 +2631,36 @@ function App() {
 
       {newMessageModalOpen && (
         <div className="modal-overlay" onClick={() => setNewMessageModalOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
             <h3>New message</h3>
-            <p className="muted">Enter their public key (npub or 64-char hex). Works for Nostr accounts and anyone with a key—share via Embed image if they’re not on Nostr.</p>
+            <p className="muted">Type their name or public key (npub/hex). Search finds people from your feed and relays.</p>
             <label>
-              npub or hex pubkey
-              <input type="text" value={newMessagePubkeyInput} onChange={(e) => setNewMessagePubkeyInput(e.target.value)} placeholder="npub1… or hex" className="wide" autoComplete="off" />
+              Name or npub/hex pubkey
+              <input type="text" value={newMessagePubkeyInput} onChange={(e) => setNewMessagePubkeyInput(e.target.value)} placeholder="e.g. Alice or npub1…" className="wide" autoComplete="off" />
             </label>
+            {newMessagePubkeyInput.trim() && !resolvePubkeyFromInput(newMessagePubkeyInput) && (() => {
+              const q = newMessagePubkeyInput.trim().toLowerCase();
+              const matches = Object.entries(profiles).filter(
+                ([pk, p]) => !selfPubkeys.includes(pk) &&
+                  (p?.name?.toLowerCase().includes(q) || p?.nip05?.toLowerCase().includes(q) || pk.toLowerCase().includes(q))
+              );
+              if (matches.length === 0) return <p className="muted">No matches. Try a different name or enter npub/hex pubkey.</p>;
+              return (
+                <div className="search-results profiles-search">
+                  <p className="muted">Matching profiles—click to open conversation:</p>
+                  <ul className="contact-list">
+                    {matches.slice(0, 12).map(([pk, p]) => (
+                      <li key={pk} className="contact-list-item">
+                        {p?.picture ? <img src={p.picture} alt="" className="contact-avatar" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span className="contact-avatar placeholder">{(p?.name ?? pk).slice(0, 2)}</span>}
+                        <button type="button" className="link-like" onClick={() => { setSelectedMessagePeer(pk); setNewMessagePubkeyInput(""); setNewMessageModalOpen(false); }}>
+                          {p?.name ?? `${pk.slice(0, 12)}…`}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })()}
             <div className="row modal-actions">
               <button type="button" onClick={() => setNewMessageModalOpen(false)}>Cancel</button>
               <button
@@ -1864,7 +2672,19 @@ function App() {
                     setSelectedMessagePeer(pk);
                     setNewMessagePubkeyInput("");
                     setNewMessageModalOpen(false);
-                  } else setStatus("Enter a valid npub or 64-char hex pubkey");
+                  } else {
+                    const q = newMessagePubkeyInput.trim().toLowerCase();
+                    const matches = Object.entries(profiles).filter(
+                      ([p, pr]) => !selfPubkeys.includes(p) &&
+                        (pr?.name?.toLowerCase().includes(q) || pr?.nip05?.toLowerCase().includes(q))
+                    );
+                    if (matches.length === 1) {
+                      setSelectedMessagePeer(matches[0][0]);
+                      setNewMessagePubkeyInput("");
+                      setNewMessageModalOpen(false);
+                    } else if (matches.length > 1) setStatus("Several matches—click one above or enter npub");
+                    else setStatus("No match. Enter a name (from your feed) or npub/hex pubkey.");
+                  }
                 }}
               >
                 Open conversation
@@ -1961,12 +2781,20 @@ function App() {
               <textarea value={editAbout} onChange={(e) => setEditAbout(e.target.value)} placeholder="Bio" rows={3} className="wide" />
             </label>
             <label>
-              Picture URL
-              <input type="url" value={editPicture} onChange={(e) => setEditPicture(e.target.value)} placeholder="https://…" className="wide" />
+              Picture
+              <div className="edit-media-row">
+                <input type="url" value={editPicture} onChange={(e) => setEditPicture(e.target.value)} placeholder="https://… or upload" className="wide" />
+                <input ref={editPfpInputRef} type="file" accept="image/*" className="hidden-input" onChange={handleEditPfpUpload} />
+                <button type="button" className="btn-secondary" onClick={() => editPfpInputRef.current?.click()}>Choose file</button>
+              </div>
             </label>
             <label>
-              Cover / banner URL
-              <input type="url" value={editBanner} onChange={(e) => setEditBanner(e.target.value)} placeholder="https://…" className="wide" />
+              Cover / banner
+              <div className="edit-media-row">
+                <input type="url" value={editBanner} onChange={(e) => setEditBanner(e.target.value)} placeholder="https://… or upload" className="wide" />
+                <input ref={editCoverInputRef} type="file" accept="image/*" className="hidden-input" onChange={handleEditCoverUpload} />
+                <button type="button" className="btn-secondary" onClick={() => editCoverInputRef.current?.click()}>Choose file</button>
+              </div>
             </label>
             <div className="row modal-actions">
               <button type="button" onClick={() => setEditProfileOpen(false)}>Cancel</button>
@@ -1983,4 +2811,20 @@ function App() {
   );
 }
 
-export default App;
+function AppBootstrap() {
+  const [profile, setProfile] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    const sync = getStorageProfileSync();
+    if (sync != null) {
+      setProfile(sync);
+      return;
+    }
+    invoke<string | null>("get_test_profile")
+      .then((p) => setProfile(p ?? null))
+      .catch(() => setProfile(null));
+  }, []);
+  if (profile === undefined) return <p className="muted" style={{ padding: "2rem" }}>Loading…</p>;
+  return <App profile={profile} />;
+}
+
+export default AppBootstrap;

@@ -8,6 +8,7 @@ export const DEFAULT_RELAYS = [
   "wss://relay.damus.io",
   "wss://relay.primal.net",
   "wss://nos.lol",
+  "wss://relay.nostr.band",
 ];
 
 export type RelayEventCallback = (event: NostrEvent) => void;
@@ -16,7 +17,7 @@ type RelayHandle = { close: () => void; send: (payload: unknown[]) => void };
 
 function connectRelay(
   relayUrl: string,
-  pubkey: string,
+  ourPubkeys: string[],
   onEvent: RelayEventCallback,
   onEose?: () => void,
   onError?: (err: unknown) => void
@@ -26,6 +27,7 @@ function connectRelay(
   const subId = "stegstr-feed-" + Math.random().toString(36).slice(2, 10);
   const subDm = "stegstr-dm-" + Math.random().toString(36).slice(2, 10);
   const dynamicSubIds = new Set<string>();
+  const authors = ourPubkeys.length > 0 ? ourPubkeys : ["0000000000000000000000000000000000000000000000000000000000000000"];
 
   function send(payload: unknown[]) {
     if (closed || !ws || ws.readyState !== WebSocket.OPEN) return;
@@ -58,14 +60,14 @@ function connectRelay(
       send([
         "REQ",
         subId,
-        { kinds: [0, 1, 3, 5, 6, 10003], authors: [pubkey], limit: 200 },
+        { kinds: [0, 1, 3, 5, 6, 10003], authors, limit: 200 },
         { kinds: [0], limit: 500 },
         { kinds: [1], limit: 300 },
         { kinds: [6], limit: 300 },
-        { kinds: [7], "#p": [pubkey], limit: 300 },
-        { kinds: [9735], "#p": [pubkey], limit: 300 },
+        { kinds: [7], "#p": authors, limit: 300 },
+        { kinds: [9735], "#p": authors, limit: 300 },
       ]);
-      send(["REQ", subDm, { kinds: [4], "#p": [pubkey], limit: 100 }]);
+      send(["REQ", subDm, { kinds: [4], "#p": authors, limit: 100 }]);
     };
 
     ws.onmessage = (ev) => {
@@ -119,12 +121,14 @@ export type ConnectRelaysResult = {
   requestFollowers: (ofPubkey: string) => void;
   /** NIP-50: search notes by text (relay-dependent). */
   requestSearch: (query: string) => void;
+  /** NIP-50: search profiles by text (relay-dependent; not all relays support). */
+  requestProfileSearch: (query: string) => void;
   /** Load more notes (for infinite scroll). until = oldest created_at. */
   requestMore: (until: number) => void;
 };
 
 export function connectRelays(
-  pubkey: string,
+  ourPubkeys: string[],
   onEvent: RelayEventCallback,
   onEose?: () => void,
   onError?: (err: unknown) => void,
@@ -139,7 +143,7 @@ export function connectRelays(
   for (const url of relays) {
     const h = connectRelay(
       url,
-      pubkey,
+      ourPubkeys,
       onEvent,
       () => {
         eoseCount++;
@@ -185,6 +189,13 @@ export function connectRelays(
       const subId = "stegstr-search-" + Math.random().toString(36).slice(2, 10);
       lastSearchSubId = subId;
       const payload = ["REQ", subId, { kinds: [1], search: q, limit: 100 }];
+      handles.forEach((h) => h.send(payload));
+    },
+    requestProfileSearch: (query: string) => {
+      const q = query.trim();
+      if (!q || q.length < 2) return;
+      const subId = "stegstr-profile-search-" + Math.random().toString(36).slice(2, 10);
+      const payload = ["REQ", subId, { kinds: [0], search: q, limit: 50 }];
       handles.forEach((h) => h.send(payload));
     },
     requestMore: (until: number) => {

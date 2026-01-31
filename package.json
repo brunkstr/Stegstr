@@ -10,7 +10,11 @@
     "tauri": "tauri",
     "build:mac": "tauri build",
     "build:win": "tauri build",
-    "build:linux": "tauri build"
+    "build:linux": "tauri build",
+    "launch:profile1": "./scripts/launch-profile-1.sh",
+    "launch:profile2": "./scripts/launch-profile-2.sh",
+    "launch:both": "./scripts/launch-both-profiles.sh",
+    "test:e2e": "node tests/e2e/run-permutations.mjs"
   },
   "dependencies": {
     "@noble/hashes": "^2.0.1",

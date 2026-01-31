@@ -111,6 +111,11 @@ export const nip19 = {
     const words = bech32.toWords(Array.from(secretKey));
     return bech32.encode("nsec", words, 1000);
   },
+  npubEncode(pubkey: Uint8Array | string): string {
+    const bytes = typeof pubkey === "string" ? hexToBytes(pubkey) : pubkey;
+    const words = bech32.toWords(Array.from(bytes));
+    return bech32.encode("npub", words, 1000);
+  },
 };
 
 /** NIP-04: decrypt kind 4 content. otherPubkeyHex = sender if we're recipient, or recipient (from p tag) if we're sender.

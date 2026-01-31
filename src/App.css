@@ -208,6 +208,14 @@ button:active { background-color: #eee; }
 .compose-avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
 .compose-body { flex: 1; min-width: 0; }
 .compose-body textarea { width: 100%; margin-bottom: 0.5rem; }
+.compose-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-top: 0.5rem; }
+.post-media-preview { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+.post-media-item { display: flex; align-items: center; gap: 0.25rem; }
+.post-media-item img { max-width: 120px; max-height: 120px; border-radius: 8px; object-fit: cover; }
+.post-media-item .btn-remove { padding: 0.1rem 0.4rem; font-size: 1.2rem; line-height: 1; }
+.hidden-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
+.edit-media-row { display: flex; gap: 0.5rem; align-items: center; }
+.edit-media-row .wide { flex: 1; min-width: 0; }
 .compose-body .char-counter, .reply-box .char-counter { font-size: 0.85rem; margin: 0.25rem 0 0.5rem; }
 .btn-primary { background: #111; color: #fff; border-color: #111; }
 .btn-primary:hover { background: #333; border-color: #333; }
@@ -260,6 +268,7 @@ button.link-like:hover { text-decoration: underline; }
 .note-content p { margin: 0 0 0.5rem; white-space: pre-wrap; word-break: break-word; }
 .note-images { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
 .note-img { max-width: 100%; max-height: 300px; border-radius: 8px; object-fit: cover; }
+.note-video { max-height: 360px; object-fit: contain; }
 .note-actions { display: flex; gap: 1rem; margin-top: 0.5rem; }
 .note-actions button { padding: 0.25rem 0.5rem; font-size: 0.85rem; background: transparent; border: none; }
 .note-actions button:hover { background: #eee; border-radius: 4px; }
@@ -270,7 +279,7 @@ button.link-like:hover { text-decoration: underline; }
 textarea { resize: vertical; min-height: 60px; }
 
 .muted { color: #666; font-size: 0.9rem; }
-.status { color: #111; font-size: 0.9rem; }
+.status { color: #111; font-size: 0.9rem; padding: 0.5rem 1rem; background: #e8f5e9; border-radius: 6px; margin: 0.5rem 1rem; border: 1px solid #c8e6c9; }
 .error { color: #111; font-size: 0.9rem; font-weight: 600; }
 
 /* Reply box */
@@ -338,12 +347,39 @@ textarea { resize: vertical; min-height: 60px; }
 /* Steganography sidebar */
 .widget { padding: 1rem; background: #fff; border-radius: 10px; border: 1px solid #ddd; }
 .steganography-widget .stego-actions { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.75rem; }
+.stego-drop-zone {
+  border: 2px dashed #ccc;
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 0.5rem 0;
+  text-align: center;
+  font-size: 0.9rem;
+  color: #666;
+  background: #fafafa;
+}
+.stego-drop-zone:hover { border-color: #999; background: #f5f5f5; }
+.detect-status { margin: 0.25rem 0; font-style: italic; }
 .btn-stego { width: 100%; }
+.btn-quick-test { font-size: 0.85rem; background: #e8f5e9; border-color: #4caf50; color: #2e7d32; }
+.btn-quick-test:hover { background: #c8e6c9; }
+.acting-identity { font-size: 0.8rem; color: #666; margin-left: 0.5rem; }
+.identity-view .identity-actions { display: flex; gap: 0.5rem; margin: 1rem 0; }
+.identity-list { list-style: none; padding: 0; margin: 0; }
+.identity-item { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem 0; border-bottom: 1px solid #eee; }
+.identity-item:last-child { border-bottom: none; }
+.identity-pubkey { font-family: monospace; font-size: 0.75rem; max-width: 100%; word-break: break-all; }
+.identity-viewing, .identity-acting { display: flex; align-items: center; gap: 0.25rem; font-size: 0.85rem; }
+.identity-label { flex: 1; }
+.identity-type { font-size: 0.8rem; }
+.identity-private { display: flex; align-items: center; gap: 0.25rem; font-size: 0.8rem; color: #666; }
+.event-identity-tag { font-size: 0.7rem; color: #666; background: #f0f0f0; padding: 0.1rem 0.3rem; border-radius: 4px; margin-left: 0.25rem; }
 .widget h3 { margin: 0 0 0.5rem; font-size: 1rem; font-weight: 600; }
 
 /* Other views */
 .profile-view .profile-card-main { max-width: 400px; }
 .profile-view .pubkey-display { font-family: monospace; font-size: 0.8rem; }
+.pubkey-copy { cursor: pointer; word-break: break-all; user-select: all; }
+.pubkey-copy:hover { text-decoration: underline; }
 .profile-header-card { background: #fff; border: 1px solid #ddd; border-radius: 10px; overflow: hidden; margin-bottom: 1rem; }
 .profile-banner-wrap { width: 100%; height: 160px; overflow: hidden; background: #eee; }
 .profile-banner { width: 100%; height: 100%; object-fit: cover; }
@@ -357,6 +393,8 @@ textarea { resize: vertical; min-height: 60px; }
 .settings-list { list-style: none; padding: 0; margin: 0; }
 .settings-list li { padding: 0.25rem 0; }
 .settings-list-item { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.settings-identity-item { flex-direction: column; align-items: stretch; }
+.settings-identity-item .pubkey-copy { margin-top: 0.25rem; }
 .settings-sub { font-size: 0.9rem; margin: 0.5rem 0 0.25rem; color: #666; }
 .mute-add-wrap { display: flex; gap: 0.5rem; margin: 0.5rem 0; align-items: center; }
 .mute-add-wrap input { flex: 1; min-width: 0; }
@@ -382,6 +420,17 @@ textarea { resize: vertical; min-height: 60px; }
 .note-thread.focused { outline: 2px solid #111; outline-offset: 2px; border-radius: 10px; }
 .repost-label { margin: 0 0 0.25rem; font-size: 0.85rem; }
 
+/* Search profile results */
+.search-profiles-section { margin-bottom: 1rem; }
+.search-section-title { font-size: 0.95rem; margin: 0 0 0.5rem; color: #666; }
+.profile-result-list { list-style: none; padding: 0; margin: 0; }
+.profile-result-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 0; border-bottom: 1px solid #eee; }
+.profile-result-item:last-child { border-bottom: none; }
+.profile-result-info { flex: 1; min-width: 0; }
+.profile-result-card { padding: 1rem; background: #f8f8f8; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #eee; }
+.profile-result-card .btn-primary { margin-top: 0.5rem; }
+.profiles-search { margin-bottom: 1rem; }
+
 /* Modals */
 .modal-overlay {
   position: fixed;
@@ -401,6 +450,8 @@ textarea { resize: vertical; min-height: 60px; }
   box-shadow: 0 4px 20px rgba(0,0,0,0.2);
   border: 1px solid #ddd;
 }
+.modal-wide { max-width: 500px; }
+.modal-wide .profiles-search { max-height: 240px; overflow-y: auto; }
 .modal h3 { margin: 0 0 1rem; font-size: 1.1rem; font-weight: 600; }
 .modal label { display: block; margin-bottom: 0.75rem; font-size: 0.9rem; }
 .modal label input, .modal label textarea { margin-top: 0.25rem; }
