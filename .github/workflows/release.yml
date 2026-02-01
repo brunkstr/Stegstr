@@ -29,6 +29,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -48,9 +50,10 @@ jobs:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: "src-tauri -> target"
+          cache-on-failure: true
 
       - name: Install frontend dependencies
         run: npm ci
@@ -77,6 +80,7 @@ jobs:
     permissions:
       contents: write
     needs: build
+    if: always() && (needs.build.result == 'success' || needs.build.result == 'failure') && !cancelled()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
