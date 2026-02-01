@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import * as Nostr from "./nostr-stub";
-import { connectRelays, publishEvent, DEFAULT_RELAYS } from "./relay";
+import { connectRelays, publishEvent, DEFAULT_RELAYS, getRelayUrls } from "./relay";
 import { extractImageUrls, mediaUrlsFromTags, isVideoUrl, contentWithoutImages, uint8ArrayToBase64 } from "./utils";
 import { uploadMedia } from "./upload";
 import { ensureStegstrSuffix, MAX_NOTE_USER_CONTENT } from "./constants";
@@ -175,6 +175,14 @@ function App({ profile }: { profile: string | null }) {
     } catch (_) {}
     return [...DEFAULT_RELAYS];
   });
+  useEffect(() => {
+    getRelayUrls().then((urls) => {
+      setRelayUrls((prev) => {
+        if (prev.length === DEFAULT_RELAYS.length && prev.every((u, i) => u === DEFAULT_RELAYS[i])) return urls;
+        return prev;
+      });
+    });
+  }, []);
   const [newRelayUrl, setNewRelayUrl] = useState("");
   const [feedFilter, setFeedFilter] = useState<"global" | "following">("global");
   const [detecting, setDetecting] = useState(false);
@@ -2502,7 +2510,7 @@ function App({ profile }: { profile: string | null }) {
                 })}
               </ul>
               <h3 className="settings-section">Relays</h3>
-              <p className="muted">Relays used for feed and publish. Add or remove below.</p>
+              <p className="muted">Default is the Stegstr relay (proxy); relay path is managed by Stegstr. You can add or remove relay URLs below.</p>
               <div className="mute-add-wrap">
                 <input
                   type="url"
@@ -2544,7 +2552,7 @@ function App({ profile }: { profile: string | null }) {
                   </li>
                 ))}
               </ul>
-              {relayUrls.length === 0 && <p className="muted">Add at least one relay (e.g. wss://relay.damus.io).</p>}
+              {relayUrls.length === 0 && <p className="muted">Add at least one relay (e.g. the Stegstr proxy or wss://relay.damus.io).</p>}
               <h3 className="settings-section">Mute</h3>
               <p className="muted">Muted users and words are hidden from feed and notifications.</p>
               <div className="mute-add-wrap">

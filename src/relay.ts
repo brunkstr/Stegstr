@@ -1,15 +1,55 @@
 /**
  * Nostr relay client: subscribe (feed, profiles, DMs, contacts, reactions, replies) and publish.
+ * Relay list is fetched from the Stegstr website config (relay.json).
  */
 
 import type { NostrEvent } from "./types";
 
+/** URL where the app fetches relay list (JSON with "relays" array). */
+export const STEGSTR_CONFIG_URL = "https://www.stegstr.com/config/relay.json";
+
+/** Fallback when relay.json is not served (e.g. cPanel blocking .json). */
+export const STEGSTR_CONFIG_URL_PHP = "https://www.stegstr.com/config/relay.php";
+
+/** Default relay list when config fetch fails (direct Nostr relays). */
 export const DEFAULT_RELAYS = [
-  "wss://relay.damus.io",
   "wss://relay.primal.net",
+  "wss://relay.damus.io",
   "wss://nos.lol",
   "wss://relay.nostr.band",
 ];
+
+function parseConfigResponse(data: unknown): string[] {
+  const obj = data as { relays?: unknown; proxyUrl?: string };
+  if (Array.isArray(obj.relays)) {
+    const urls = obj.relays
+      .filter((u): u is string => typeof u === "string" && (u.startsWith("wss://") || u.startsWith("ws://")))
+      .map((u) => u.trim())
+      .filter(Boolean);
+    if (urls.length > 0) return urls;
+  }
+  if (typeof obj.proxyUrl === "string") {
+    const u = obj.proxyUrl.trim();
+    if (u && (u.startsWith("wss://") || u.startsWith("ws://"))) return [u];
+  }
+  return [];
+}
+
+/** Fetches relay list from website config; tries relay.php if relay.json fails (e.g. cPanel). */
+export async function getRelayUrls(): Promise<string[]> {
+  for (const configUrl of [STEGSTR_CONFIG_URL, STEGSTR_CONFIG_URL_PHP]) {
+    try {
+      const res = await fetch(configUrl);
+      if (!res.ok) continue;
+      const data = await res.json();
+      const urls = parseConfigResponse(data);
+      if (urls.length > 0) return urls;
+    } catch (_) {
+      // ignore, try next URL
+    }
+  }
+  return [...DEFAULT_RELAYS];
+}
 
 export type RelayEventCallback = (event: NostrEvent) => void;
 
