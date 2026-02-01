@@ -1,5 +1,6 @@
-# Creates GitHub Release with downloadable assets when you push to the release branch.
+# Creates GitHub Release with stable-named assets for direct download links.
 # Enable: Settings → Actions → Workflow permissions → Read and write permissions
+# Direct links: .../releases/latest/download/Stegstr-macOS.dmg etc.
 
 name: Release Stegstr
 
@@ -7,12 +8,13 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - main
       - release
 
 jobs:
-  publish-tauri:
+  build:
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -53,14 +55,61 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build and create release
-        uses: tauri-apps/tauri-action@v0
+      - name: Build Tauri app
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.platform }}
+          path: src-tauri/target/release/bundle/
+
+  release:
+    permissions:
+      contents: write
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)" >> $GITHUB_OUTPUT
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          # macOS: find .dmg anywhere in macos artifact
+          DMG=$(find artifacts -name "*.dmg" -type f 2>/dev/null | head -1)
+          [ -n "$DMG" ] && cp "$DMG" release-assets/Stegstr-macOS.dmg
+          # Windows: .exe and .msi
+          EXE=$(find artifacts -name "*.exe" -type f 2>/dev/null | head -1)
+          [ -n "$EXE" ] && cp "$EXE" release-assets/Stegstr-Windows.exe
+          MSI=$(find artifacts -name "*.msi" -type f 2>/dev/null | head -1)
+          [ -n "$MSI" ] && cp "$MSI" release-assets/Stegstr-Windows.msi
+          # Linux: .deb and .AppImage
+          DEB=$(find artifacts -name "*.deb" -type f 2>/dev/null | head -1)
+          [ -n "$DEB" ] && cp "$DEB" release-assets/Stegstr-Linux.deb
+          APPIMG=$(find artifacts -name "*.AppImage" -type f 2>/dev/null | head -1)
+          [ -n "$APPIMG" ] && cp "$APPIMG" release-assets/Stegstr-Linux.AppImage
+          ls -la release-assets/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}-${{ github.run_number }}
+          name: Stegstr v${{ steps.version.outputs.VERSION }} (build ${{ github.run_number }})
+          body: |
+            Download Stegstr for your platform. One click — no extra steps.
+            - **macOS**: Stegstr-macOS.dmg
+            - **Windows**: Stegstr-Windows.exe or Stegstr-Windows.msi
+            - **Linux**: Stegstr-Linux.deb or Stegstr-Linux.AppImage
+          draft: false
+          files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: v__VERSION__
-          releaseName: "Stegstr v__VERSION__"
-          releaseBody: "See the assets to download and install."
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
