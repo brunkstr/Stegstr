@@ -2,7 +2,7 @@
 
 Nostr client with steganographic transport for **macOS, Windows, and Linux**. Use your Nostr account locally, load/save feed state from images (detect/embed), and optionally connect to relays when the network toggle is ON.
 
-**Nostr branding**: All posts (kind 1 notes and replies) published through Stegstr automatically end with ` Stegster` so they are identifiable as coming from this app. The compose UI enforces a character limit (4991 user chars) to reserve space for the suffix.
+**Nostr branding**: All posts (kind 1 notes and replies) published through Stegstr automatically end with ` Sent by Stegstr.` so they are identifiable as coming from this app. The compose UI enforces a character limit (4991 user chars) to reserve space for the suffix.
 
 ## What it does
 
@@ -56,7 +56,7 @@ Embedded in PNG via LSB (1 bit per R/G/B channel, 3 bits per pixel).
 
 ## Mobile (Android)
 
-A mobile Android app is available in `mobile-android/`, forked from [Primal Android](https://github.com/PrimalHQ/primal-android-app). It includes Stegstr's steganographic Detect/Embed, " Stegster" post branding, and character limit. See [mobile-android/STEGSTR_MOBILE_README.md](mobile-android/STEGSTR_MOBILE_README.md) for build and status.
+A mobile Android app is available in `mobile-android/`, forked from [Primal Android](https://github.com/PrimalHQ/primal-android-app). It includes Stegstr's steganographic Detect/Embed, " Sent by Stegstr." post branding, and character limit. See [mobile-android/STEGSTR_MOBILE_README.md](mobile-android/STEGSTR_MOBILE_README.md) for build and status.
 
 ## Nostr signing (current)
 

@@ -6,7 +6,7 @@ import * as Nostr from "./nostr-stub";
 import { connectRelays, publishEvent, DEFAULT_RELAYS } from "./relay";
 import { extractImageUrls, mediaUrlsFromTags, isVideoUrl, contentWithoutImages, uint8ArrayToBase64 } from "./utils";
 import { uploadMedia } from "./upload";
-import { ensureStegsterSuffix, MAX_NOTE_USER_CONTENT } from "./constants";
+import { ensureStegstrSuffix, MAX_NOTE_USER_CONTENT } from "./constants";
 import * as stegoCrypto from "./stego-crypto";
 import * as logger from "./logger";
 import type { NostrEvent, NostrStateBundle } from "./types";
@@ -801,6 +801,11 @@ function App({ profile }: { profile: string | null }) {
 
   const handleLoadFromImage = useCallback(async (providedPath?: string | null) => {
     setDecodeError("");
+    const w = typeof window !== "undefined" ? window : (globalThis as unknown as Window);
+    if (!(w as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+      setDecodeError("Detect requires the Stegstr desktop app. Run: npm run tauri dev (not in a browser)");
+      return;
+    }
     let path: string | null;
     if (providedPath === undefined) {
       setDetecting(true);
@@ -913,7 +918,12 @@ function App({ profile }: { profile: string | null }) {
       logger.logAction("detect_completed", `Loaded ${bundle.events.length} events`, { path, eventCount: bundle.events.length });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setDecodeError(msg);
+      const isTauriBridgeError = /undefined.*invoke|__TAURI_INTERNALS__/i.test(msg);
+      setDecodeError(
+        isTauriBridgeError
+          ? "Detect requires the Stegstr desktop app. Run: npm run tauri dev (not in a browser)"
+          : msg
+      );
       logger.logError("Detect failed", e, { path });
     } finally {
       setDetecting(false);
@@ -1128,7 +1138,7 @@ function App({ profile }: { profile: string | null }) {
     const mediaPart = postMediaUrls.length ? "\n" + postMediaUrls.join("\n") : "";
     if (!textPart && !postMediaUrls.length) return;
     const sk = Nostr.hexToBytes(effectivePrivKey);
-    const content = ensureStegsterSuffix((textPart || " ") + mediaPart);
+    const content = ensureStegstrSuffix((textPart || " ") + mediaPart);
     const tags: string[][] = postMediaUrls.flatMap((url) => [["im", url]]);
     const ev = await Nostr.finishEventAsync(
       {
@@ -1288,7 +1298,7 @@ function App({ profile }: { profile: string | null }) {
         const ev = await Nostr.finishEventAsync(
           {
             kind: 1,
-            content: ensureStegsterSuffix(replyContent.trim()),
+            content: ensureStegstrSuffix(replyContent.trim()),
             tags,
             created_at: Math.floor(Date.now() / 1000),
           },
@@ -1477,7 +1487,7 @@ function App({ profile }: { profile: string | null }) {
       for (const ev of anonEvents) {
         if (cancelled) return;
         try {
-          const content = ev.kind === 1 ? ensureStegsterSuffix(ev.content) : ev.content;
+          const content = ev.kind === 1 ? ensureStegstrSuffix(ev.content) : ev.content;
           const newEv = await Nostr.finishEventAsync(
             { kind: ev.kind, content, tags: ev.tags, created_at: ev.created_at },
             sk
