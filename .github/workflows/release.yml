@@ -58,11 +58,20 @@ jobs:
       - name: Build Tauri app
         run: npm run tauri build -- ${{ matrix.args }}
 
+      - name: Set bundle path
+        id: bundle
+        run: |
+          if [[ "${{ matrix.args }}" == *"universal-apple-darwin"* ]]; then
+            echo "path=src-tauri/target/universal-apple-darwin/release/bundle" >> $GITHUB_OUTPUT
+          else
+            echo "path=src-tauri/target/release/bundle" >> $GITHUB_OUTPUT
+          fi
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: bundle-${{ matrix.platform }}
-          path: src-tauri/target/release/bundle/
+          path: ${{ steps.bundle.outputs.path }}/
 
   release:
     permissions:
