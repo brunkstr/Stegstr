@@ -54,14 +54,22 @@ function loadIdentities(profile: string | null): IdentityEntry[] {
     if (!raw) return [];
     const arr = JSON.parse(raw) as unknown[];
     if (!Array.isArray(arr)) return [];
-    return arr.filter(
-      (x): x is IdentityEntry =>
-        typeof x === "object" &&
-        x !== null &&
-        typeof (x as IdentityEntry).id === "string" &&
-        typeof (x as IdentityEntry).privKeyHex === "string" &&
-        /^[a-fA-F0-9]{64}$/.test((x as IdentityEntry).privKeyHex)
-    );
+    return arr
+      .filter(
+        (x): x is IdentityEntry =>
+          typeof x === "object" &&
+          x !== null &&
+          typeof (x as IdentityEntry).id === "string" &&
+          typeof (x as IdentityEntry).privKeyHex === "string" &&
+          /^[a-fA-F0-9]{64}$/.test((x as IdentityEntry).privKeyHex)
+      )
+      .map((x) => {
+        const ent = x as IdentityEntry;
+        if (ent.category !== "local" && ent.category !== "nostr") {
+          return { ...ent, category: ent.type === "nostr" ? "nostr" as const : "local" as const };
+        }
+        return ent;
+      });
   } catch (_) {}
   return [];
 }
@@ -79,6 +87,7 @@ function migrateToIdentities(profile: string | null): IdentityEntry[] {
         privKeyHex: anonKey,
         label: "Local",
         type: "local",
+        category: "local",
       });
     }
   } catch (_) {}
@@ -92,7 +101,15 @@ function migrateToIdentities(profile: string | null): IdentityEntry[] {
 
 type View = "feed" | "messages" | "followers" | "notifications" | "profile" | "settings" | "bookmarks" | "explore" | "identity";
 
-export type IdentityEntry = { id: string; privKeyHex: string; label: string; type: "local" | "nostr"; isPrivate?: boolean };
+export type IdentityEntry = {
+  id: string;
+  privKeyHex: string;
+  label: string;
+  type: "local" | "nostr";
+  /** local = data only steganographic (images); nostr = published to relays when Network ON. Convertible both ways. */
+  category: "local" | "nostr";
+  isPrivate?: boolean;
+};
 
 function App({ profile }: { profile: string | null }) {
   const [identities, setIdentities] = useState<IdentityEntry[]>(() => migrateToIdentities(profile));
@@ -154,6 +171,8 @@ function App({ profile }: { profile: string | null }) {
     } catch (_) {}
     return new Set();
   });
+  // Event IDs loaded via Detect image; show them even if author identity has "view" off (shared with any Stegstr user).
+  const [importedEventIds, setImportedEventIds] = useState<Set<string>>(() => new Set());
   const [mutedWords, setMutedWords] = useState<string[]>(() => {
     try {
       const raw = localStorage.getItem(getStorageKey(BASE_MUTE_WORDS, profile));
@@ -241,7 +260,7 @@ function App({ profile }: { profile: string | null }) {
     if (identities.length === 0) {
       const anon = getOrCreateAnonKey(profile);
       const pubkey = Nostr.getPublicKey(Nostr.hexToBytes(anon));
-      setIdentities([{ id: "anon-" + pubkey.slice(0, 12), privKeyHex: anon, label: "Local", type: "local" }]);
+      setIdentities([{ id: "anon-" + pubkey.slice(0, 12), privKeyHex: anon, label: "Local", type: "local", category: "local" }]);
       setActingPubkey(pubkey);
       setViewingPubkeys(new Set([pubkey]));
     }
@@ -280,6 +299,8 @@ function App({ profile }: { profile: string | null }) {
   const effectivePrivKey = actingIdentity?.privKeyHex ?? identities[0]?.privKeyHex ?? getOrCreateAnonKey(profile);
   const pubkey = Nostr.getPublicKey(Nostr.hexToBytes(effectivePrivKey));
   const selfPubkeys = Array.from(viewingPubkeys).length > 0 ? Array.from(viewingPubkeys) : [pubkey];
+  /** Only publish to Nostr relays when identity category is "nostr". Local = steganographic only. */
+  const canPublishToNetwork = actingIdentity?.category === "nostr";
 
   const getIdentityLabelsForPubkey = useCallback((pk: string): string[] => {
     return identities
@@ -465,8 +486,8 @@ function App({ profile }: { profile: string | null }) {
       const reposter = item.type === "repost" ? item.repost.pubkey : null;
       if (mutedPubkeys.has(note.pubkey) || (reposter && mutedPubkeys.has(reposter))) return false;
       if (isNoteMuted(note)) return false;
-      if (ourPubkeysSet.has(note.pubkey) && !viewingPubkeys.has(note.pubkey)) return false;
-      if (reposter && ourPubkeysSet.has(reposter) && !viewingPubkeys.has(reposter)) return false;
+      if (ourPubkeysSet.has(note.pubkey) && !viewingPubkeys.has(note.pubkey) && !importedEventIds.has(note.id)) return false;
+      if (reposter && ourPubkeysSet.has(reposter) && !viewingPubkeys.has(reposter) && !importedEventIds.has(item.type === "repost" ? item.repost.id : note.id)) return false;
       if (feedFilter === "following") {
         const authorPk = item.type === "repost" ? item.repost.pubkey : item.note.pubkey;
         if (!contactsSet.has(authorPk)) return false;
@@ -699,7 +720,7 @@ function App({ profile }: { profile: string | null }) {
   useEffect(() => {
     const justTurnedOn = networkEnabled && !prevNetworkRefLegacy.current;
     prevNetworkRefLegacy.current = networkEnabled;
-    if (!justTurnedOn || !pubkey) return;
+    if (!justTurnedOn || !pubkey || !canPublishToNetwork) return;
     setEvents((prev) => {
       const myEvents = prev.filter((e) => e.pubkey === pubkey);
       const BATCH = 5;
@@ -713,7 +734,7 @@ function App({ profile }: { profile: string | null }) {
       });
       return prev;
     });
-  }, [networkEnabled, pubkey, relayUrls]);
+  }, [networkEnabled, pubkey, relayUrls, canPublishToNetwork]);
 
   const dmEventIds = dmEvents.map((e) => e.id).join(",");
   useEffect(() => {
@@ -770,7 +791,7 @@ function App({ profile }: { profile: string | null }) {
       setStatus("Identity already added");
       return;
     }
-    setIdentities((prev) => [...prev, { id: "nostr-" + pk.slice(0, 12), privKeyHex: privHex, label: pk.slice(0, 8) + "…", type: "nostr" }]);
+    setIdentities((prev) => [...prev, { id: "nostr-" + pk.slice(0, 12), privKeyHex: privHex, label: pk.slice(0, 8) + "…", type: "nostr", category: "nostr" }]);
     setActingPubkey(pk);
     setViewingPubkeys((prev) => new Set(prev).add(pk));
     setLoginFormOpen(false);
@@ -799,7 +820,7 @@ function App({ profile }: { profile: string | null }) {
     const sk = Nostr.generateSecretKey();
     const hex = Nostr.bytesToHex(sk);
     const pk = Nostr.getPublicKey(sk);
-    setIdentities((prev) => [...prev, { id: "local-" + pk.slice(0, 12), privKeyHex: hex, label: "Local " + (prev.length + 1), type: "local" }]);
+    setIdentities((prev) => [...prev, { id: "local-" + pk.slice(0, 12), privKeyHex: hex, label: "Local " + (prev.length + 1), type: "local", category: "local" }]);
     setActingPubkey(pk);
     setViewingPubkeys((prev) => new Set(prev).add(pk));
     setNsec(Nostr.nip19.nsecEncode(sk));
@@ -919,6 +940,16 @@ function App({ profile }: { profile: string | null }) {
       if (Object.keys(profileUpdates).length > 0) {
         setProfiles((p) => ({ ...p, ...profileUpdates }));
       }
+      setImportedEventIds((prev) => {
+        const next = new Set(prev);
+        bundle.events.forEach((e) => next.add(e.id));
+        if (next.size > 2000) {
+          const arr = [...next];
+          arr.splice(0, arr.length - 2000);
+          return new Set(arr);
+        }
+        return next;
+      });
       setView("feed");
       setFeedFilter("global");
       setSearchQuery("");
@@ -1129,7 +1160,7 @@ function App({ profile }: { profile: string | null }) {
         );
         setEvents((prev) => [ev as NostrEvent, ...prev]);
         setDmReplyContent("");
-        if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Message sent");
         logger.logAction("dm_send", "DM sent", { to: theirPubkeyHex.slice(0, 8) + "…", networkEnabled });
       } catch (e) {
@@ -1137,7 +1168,7 @@ function App({ profile }: { profile: string | null }) {
         logger.logError("DM send failed", e, { to: theirPubkeyHex.slice(0, 8) + "…" });
       }
     },
-    [effectivePrivKey, networkEnabled]
+    [effectivePrivKey, networkEnabled, canPublishToNetwork]
   );
 
   const handlePost = useCallback(async () => {
@@ -1160,10 +1191,10 @@ function App({ profile }: { profile: string | null }) {
     setEvents((prev) => [ev as NostrEvent, ...prev]);
     setNewPost("");
     setPostMediaUrls([]);
-    if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
+    if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
     setStatus("Posted");
     logger.logAction("post", "Posted note", { networkEnabled, contentLength: content.length, mediaCount: postMediaUrls.length });
-  }, [effectivePrivKey, newPost, postMediaUrls, networkEnabled]);
+  }, [effectivePrivKey, newPost, postMediaUrls, networkEnabled, canPublishToNetwork]);
 
   const handleLike = useCallback(
     async (note: NostrEvent) => {
@@ -1183,7 +1214,7 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => [ev as NostrEvent, ...prev]);
-        if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Liked");
         logger.logAction("like", "Liked note", { noteId: note.id.slice(0, 8) + "…", networkEnabled });
       } catch (e) {
@@ -1191,7 +1222,7 @@ function App({ profile }: { profile: string | null }) {
         logger.logError("Like failed", e, { noteId: note.id.slice(0, 8) + "…" });
       }
     },
-    [effectivePrivKey, networkEnabled]
+    [effectivePrivKey, networkEnabled, canPublishToNetwork]
   );
 
   const handleRepost = useCallback(
@@ -1212,13 +1243,13 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => [ev as NostrEvent, ...prev]);
-        if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Reposted");
       } catch (e) {
         setStatus("Repost failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, networkEnabled]
+    [effectivePrivKey, networkEnabled, canPublishToNetwork]
   );
 
   const handleDelete = useCallback(
@@ -1238,13 +1269,13 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => [ev as NostrEvent, ...prev]);
-        if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Note deleted");
       } catch (e) {
         setStatus("Delete failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, identities, selfPubkeys, networkEnabled]
+    [effectivePrivKey, identities, selfPubkeys, networkEnabled, canPublishToNetwork]
   );
 
   const handleBookmark = useCallback(
@@ -1260,13 +1291,13 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => prev.filter((e) => !(e.kind === 10003 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Bookmarked");
       } catch (e) {
         setStatus("Bookmark failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, pubkey, networkEnabled, bookmarksEvent]
+    [effectivePrivKey, pubkey, networkEnabled, canPublishToNetwork, bookmarksEvent]
   );
 
   const handleUnbookmark = useCallback(
@@ -1282,13 +1313,13 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => prev.filter((e) => !(e.kind === 10003 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Removed from bookmarks");
       } catch (e) {
         setStatus("Unbookmark failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, pubkey, networkEnabled, bookmarksEvent]
+    [effectivePrivKey, pubkey, networkEnabled, canPublishToNetwork, bookmarksEvent]
   );
 
   const getRootId = useCallback((note: NostrEvent): string => {
@@ -1315,7 +1346,7 @@ function App({ profile }: { profile: string | null }) {
         setEvents((prev) => [ev as NostrEvent, ...prev]);
         setReplyingTo(null);
         setReplyContent("");
-        if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Replied");
         logger.logAction("reply", "Replied to note", { rootId, networkEnabled });
       } catch (e) {
@@ -1323,7 +1354,7 @@ function App({ profile }: { profile: string | null }) {
         logger.logError("Reply failed", e, { rootId });
       }
     },
-    [effectivePrivKey, replyingTo, replyContent, networkEnabled, getRootId]
+    [effectivePrivKey, replyingTo, replyContent, networkEnabled, canPublishToNetwork, getRootId]
   );
 
   const handleEditProfileOpen = useCallback(() => {
@@ -1369,10 +1400,10 @@ function App({ profile }: { profile: string | null }) {
     setEditProfileOpen(false);
     // Never publish kind 0 for Nostr identities—their profile lives on Nostr; publishing would overwrite it
     const isNostr = actingIdentity?.type === "nostr";
-    if (networkEnabled && !isNostr) publishEvent(ev as NostrEvent, relayUrls);
+    if (networkEnabled && canPublishToNetwork && !isNostr) publishEvent(ev as NostrEvent, relayUrls);
     setStatus(isNostr ? "Profile updated (local only)" : "Profile updated");
     logger.logAction("profile_edit", isNostr ? "Profile updated (local only)" : "Profile updated", { networkEnabled, isNostr });
-  }, [effectivePrivKey, pubkey, editName, editAbout, editPicture, editBanner, networkEnabled, actingIdentity?.type]);
+  }, [effectivePrivKey, pubkey, editName, editAbout, editPicture, editBanner, networkEnabled, canPublishToNetwork, actingIdentity?.type]);
 
   const handleEditPfpUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1449,7 +1480,7 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => prev.filter((e) => !(e.kind === 3 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Following");
         logger.logAction("follow", "Followed pubkey", { theirPk: theirPk.slice(0, 8) + "…", networkEnabled });
       } catch (e) {
@@ -1457,7 +1488,7 @@ function App({ profile }: { profile: string | null }) {
         logger.logError("Follow failed", e, { theirPk: theirPk.slice(0, 8) + "…" });
       }
     },
-    [effectivePrivKey, pubkey, events, networkEnabled]
+    [effectivePrivKey, pubkey, events, networkEnabled, canPublishToNetwork]
   );
 
   const handleUnfollow = useCallback(
@@ -1473,17 +1504,17 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => prev.filter((e) => !(e.kind === 3 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
         setStatus("Unfollowed");
       } catch (e) {
         setStatus("Unfollow failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, pubkey, events, networkEnabled]
+    [effectivePrivKey, pubkey, events, networkEnabled, canPublishToNetwork]
   );
 
   useEffect(() => {
-    if (!actingIdentity || actingIdentity.type !== "nostr" || hasSyncedAnonRef.current) return;
+    if (!actingIdentity || actingIdentity.type !== "nostr" || actingIdentity.category !== "nostr" || hasSyncedAnonRef.current) return;
     hasSyncedAnonRef.current = true;
     const sk = Nostr.hexToBytes(actingIdentity.privKeyHex);
     const anonPubkey = Nostr.getPublicKey(Nostr.hexToBytes(getOrCreateAnonKey(profile)));
@@ -2390,6 +2421,7 @@ function App({ profile }: { profile: string | null }) {
             <section className="identity-view">
               <h2>Identity</h2>
               <p className="muted">Check identities to view their content; choose one as acting for new posts, replies, and DMs.</p>
+              <p className="identity-category-intro muted">Each identity has a <strong>category</strong>: <strong>Local</strong> = data only in embedded images (never sent to Nostr). <strong>Nostr</strong> = when Network is ON, posts and profile go to relays. Use <strong>Convert to Local</strong> / <strong>Convert to Nostr</strong> to switch (hover ⓘ on the button for details).</p>
               <div className="identity-actions">
                 <button type="button" className="btn-primary" onClick={handleGenerate}>Create local identity</button>
                 <button type="button" className="btn-secondary" onClick={() => setLoginFormOpen(true)}>Add Nostr identity</button>
@@ -2400,6 +2432,8 @@ function App({ profile }: { profile: string | null }) {
                   const isViewing = viewingPubkeys.has(pk);
                   const isActing = actingPubkey === pk;
                   const displayLabel = profiles[pk]?.name || id.label || pk.slice(0, 8) + "…";
+                  const category = id.category ?? (id.type === "nostr" ? "nostr" : "local");
+                  const categoryExplainer = "Local: data is only shared via embedded images (steganographic). Nostr: when Network is ON, your posts and profile are published to Nostr relays. You can convert between Local and Nostr at any time.";
                   return (
                     <li key={id.id} className="identity-item">
                       <label className="identity-viewing">
@@ -2440,6 +2474,26 @@ function App({ profile }: { profile: string | null }) {
                         {Nostr.nip19.npubEncode(pk)}
                       </span>
                       <span className="identity-type muted">({id.type})</span>
+                      <div className="identity-category-row">
+                        <span className="identity-category-label">Category:</span>
+                        <span className="identity-category-badge" data-category={category}>{category === "nostr" ? "Nostr" : "Local"}</span>
+                        <button
+                          type="button"
+                          className="btn-secondary identity-convert"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            const nextCat = category === "nostr" ? "local" : "nostr";
+                            setIdentities((prev) =>
+                              prev.map((i) => (i.id === id.id ? { ...i, category: nextCat } : i))
+                            );
+                            setStatus(nextCat === "local" ? "Identity is now Local (steganographic only)" : "Identity is now Nostr (will sync when Network ON)");
+                          }}
+                          title={category === "nostr" ? "Convert to Local (data only in images)" : "Convert to Nostr (publish to relays when Network ON)"}
+                        >
+                          {category === "nostr" ? "Convert to Local" : "Convert to Nostr"}
+                          <span className="identity-convert-info" title={categoryExplainer} aria-label="Info" onClick={(e) => e.stopPropagation()}>ⓘ</span>
+                        </button>
+                      </div>
                       <label className="identity-private">
                         <input
                           type="checkbox"

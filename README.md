@@ -1,67 +1,153 @@
-# Stegstr
+actionlint
+==========
+[![CI Badge][]][CI]
+[![API Document][api-badge]][apidoc]
 
-Nostr client with steganographic transport for **macOS, Windows, and Linux**. Use your Nostr account locally, load/save feed state from images (detect/embed), and optionally connect to relays when the network toggle is ON.
+[actionlint][repo] is a static checker for GitHub Actions workflow files. [Try it online!][playground]
 
-**Nostr branding**: All posts (kind 1 notes and replies) published through Stegstr automatically end with ` Sent by Stegstr.` so they are identifiable as coming from this app. The compose UI enforces a character limit (4991 user chars) to reserve space for the suffix.
+Features:
 
-## What it does
+- **Syntax check for workflow files** to check unexpected or missing keys following [workflow syntax][syntax-doc]
+- **Strong type check for `${{ }}` expressions** to catch several semantic errors like access to not existing property,
+  type mismatches, ...
+- **Actions usage check** to check that inputs at `with:` and outputs in `steps.{id}.outputs` are correct
+- **Reusable workflow check** to check inputs/outputs/secrets of reusable workflows and workflow calls
+- **[shellcheck][] and [pyflakes][] integrations** for scripts at `run:`
+- **Security checks**; [script injection][script-injection-doc] by untrusted inputs, hard-coded credentials
+- **Other several useful checks**; [glob syntax][filter-pattern-doc] validation, dependencies check for `needs:`,
+  runner label validation, cron syntax validation, ...
 
-- **Log in** to your existing Nostr account (nsec or 64-char hex secret key). No internet required for login.
-- **Feed**: View posts (Kind 1 events). Events come from decoded stego images or from your local posts.
-- **Network toggle** (top-right): OFF = 100% local (no relay). ON = connect to Nostr relays (future).
-- **Detect**: Load from image — pick a PNG that contains Stegstr data; the app extracts a Nostr state bundle and shows the feed.
-- **Embed**: Save to image — serialize current feed (events + your actions) into a PNG; share that image. Others can load it with Detect.
+See [the full list](docs/checks.md) of checks done by actionlint.
 
-## Supported platforms
+<img src="https://github.com/rhysd/ss/blob/master/actionlint/main.gif?raw=true" alt="actionlint reports 7 errors" width="806" height="492"/>
 
-| Platform | Build command | Output |
-|----------|---------------|--------|
-| **macOS** | `npm run build:mac` (run on Mac) | `.app`, `.dmg` |
-| **Windows** | `npm run build:win` (run on Windows) | `.exe`, `.msi` |
-| **Linux** | `npm run build:linux` (run on Linux) | `.deb`, `.AppImage` |
+**Example of broken workflow:**
 
-Tauri builds for the host OS. To produce installers for all three platforms, use the included GitHub Actions workflow (`.github/workflows/build.yml`), which runs on push to `main` or `release` and uploads build artifacts for each OS.
-
-## Prerequisites
-
-- Node.js 18+
-- Rust (latest stable). If `cargo build` fails with `edition2024` required, run: `rustup update`
-- **macOS**: Xcode Command Line Tools (or Xcode)
-- **Windows**: Visual Studio Build Tools (or Visual Studio) with C++ workload
-- **Linux**: `libwebkit2gtk-4.1-dev`, `libssl-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`
-
-## Commands
-
-```bash
-# Install frontend deps
-npm install
-
-# Development (Vite dev server + Tauri window)
-npm run tauri dev
-
-# Production build (creates native bundle for current OS)
-npm run tauri build
-# Or use platform-specific scripts: build:mac, build:win, build:linux
+```yaml
+on:
+  push:
+    branch: main
+    tags:
+      - 'v\d+'
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [macos-latest, linux-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: echo "Checking commit '${{ github.event.head_commit.message }}'"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node_version: 18.x
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ matrix.platform }}-node-${{ hashFiles('**/package-lock.json') }}
+        if: ${{ github.repository.permissions.admin == true }}
+      - run: npm install && npm test
 ```
 
-After `npm run tauri build`, the app is in `src-tauri/target/release/bundle/` (e.g. `.app` on macOS, `.exe` on Windows, `.AppImage` on Linux).
+**actionlint reports 7 errors:**
 
-## Payload format (stego)
+```
+test.yaml:3:5: unexpected key "branch" for "push" section. expected one of "branches", "branches-ignore", "paths", "paths-ignore", "tags", "tags-ignore", "types", "workflows" [syntax-check]
+  |
+3 |     branch: main
+  |     ^~~~~~~
+test.yaml:5:11: character '\' is invalid for branch and tag names. only special characters [, ?, +, *, \ ! can be escaped with \. see `man git-check-ref-format` for more details. note that regular expression is unavailable. note: filter pattern syntax is explained at https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#filter-pattern-cheat-sheet [glob]
+  |
+5 |       - 'v\d+'
+  |           ^~~~
+test.yaml:10:28: label "linux-latest" is unknown. available labels are "windows-latest", "windows-2022", "windows-2019", "windows-2016", "ubuntu-latest", "ubuntu-22.04", "ubuntu-20.04", "ubuntu-18.04", "macos-latest", "macos-12", "macos-12.0", "macos-11", "macos-11.0", "macos-10.15", "self-hosted", "x64", "arm", "arm64", "linux", "macos", "windows". if it is a custom label for self-hosted runner, set list of labels in actionlint.yaml config file [runner-label]
+   |
+10 |         os: [macos-latest, linux-latest]
+   |                            ^~~~~~~~~~~~~
+test.yaml:13:41: "github.event.head_commit.message" is potentially untrusted. avoid using it directly in inline scripts. instead, pass it through an environment variable. see https://docs.github.com/en/actions/learn-github-actions/security-hardening-for-github-actions for more details [expression]
+   |
+13 |       - run: echo "Checking commit '${{ github.event.head_commit.message }}'"
+   |                                         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+test.yaml:17:11: input "node_version" is not defined in action "actions/setup-node@v4". available inputs are "always-auth", "architecture", "cache", "cache-dependency-path", "check-latest", "node-version", "node-version-file", "registry-url", "scope", "token" [action]
+   |
+17 |           node_version: 18.x
+   |           ^~~~~~~~~~~~~
+test.yaml:21:20: property "platform" is not defined in object type {os: string} [expression]
+   |
+21 |           key: ${{ matrix.platform }}-node-${{ hashFiles('**/package-lock.json') }}
+   |                    ^~~~~~~~~~~~~~~
+test.yaml:22:17: receiver of object dereference "permissions" must be type of object but got "string" [expression]
+   |
+22 |         if: ${{ github.repository.permissions.admin == true }}
+   |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
-- **Magic**: `STEGSTR` (7 bytes)
-- **Length**: 4 bytes big-endian
-- **Payload**: UTF-8 JSON — `{ "version": 1, "events": [ ... ] }` (array of Nostr events)
+## Why?
 
-Embedded in PNG via LSB (1 bit per R/G/B channel, 3 bits per pixel).
+- **Running a workflow is time consuming.** You need to push the changes and wait until the workflow runs on GitHub even if
+  it contains some trivial mistakes. [act][] is useful to debug the workflow locally. But it is not suitable for CI and still
+  time consuming when your workflow gets larger.
+- **Checks of workflow files by GitHub are very loose.** It reports no error even if unexpected keys are in mappings
+  (meant that some typos in keys). And also it reports no error when accessing to property which is actually not existing.
+  For example `matrix.foo` when no `foo` is defined in `matrix:` section, it is evaluated to `null` and causes no error.
+- **Some mistakes silently break a workflow.** Most common case I saw is specifying missing property to cache key. In the
+  case cache silently does not work properly but a workflow itself runs without error. So you might not notice the mistake
+  forever.
 
-## Mobile (Android)
+## Quick start
 
-A mobile Android app is available in `mobile-android/`, forked from [Primal Android](https://github.com/PrimalHQ/primal-android-app). It includes Stegstr's steganographic Detect/Embed, " Sent by Stegstr." post branding, and character limit. See [mobile-android/STEGSTR_MOBILE_README.md](mobile-android/STEGSTR_MOBILE_README.md) for build and status.
+Install `actionlint` command by downloading [the released binary][releases] or by Homebrew or by `go install`. See
+[the installation document](docs/install.md) for more details like how to manage the command with several package managers
+or run via Docker container.
 
-## Nostr signing (current)
+```sh
+go install github.com/rhysd/actionlint/cmd/actionlint@latest
+```
 
-The app uses a **stub** signer in `src/nostr-stub.ts` so it runs without the `nostr-tools` npm package (which can hit registry issues). Events are created with placeholder IDs/sigs suitable for local use and for embedding in images. For full NIP-01-compliant signing (secp256k1 + Schnorr), install `nostr-tools` and switch the app to use it instead of `./nostr-stub`.
+Basically all you need to do is run the `actionlint` command in your repository. actionlint automatically detects workflows and
+checks errors. actionlint focuses on finding out mistakes. It tries to catch errors as much as possible and make false positives
+as minimal as possible.
+
+```sh
+actionlint
+```
+
+Another option to try actionlint is [the online playground][playground]. Your browser can run actionlint through WebAssembly.
+
+See [the usage document](docs/usage.md) for more details.
+
+## Documents
+
+- [Checks](docs/checks.md): Full list of all checks done by actionlint with example inputs, outputs, and playground links.
+- [Installation](docs/install.md): Installation instructions. Prebuilt binaries, Homebrew package, a Docker image, building from
+  source, a download script (for CI) are available.
+- [Usage](docs/usage.md): How to use `actionlint` command locally or on GitHub Actions, the online playground, an official Docker
+  image, and integrations with reviewdog, Problem Matchers, super-linter, pre-commit, VS Code.
+- [Configuration](docs/config.md): How to configure actionlint behavior. Currently only labels of self-hosted runners can be
+  configured.
+- [Go API](docs/api.md): How to use actionlint as Go library.
+- [References](docs/reference.md): Links to resources.
+
+## Bug reporting
+
+When you see some bugs or false positives, it is helpful to [file a new issue][issue-form] with a minimal example
+of input. Giving me some feedbacks like feature requests or ideas of additional checks is also welcome.
 
 ## License
 
-MIT
+actionlint is distributed under [the MIT license](./LICENSE.txt).
+
+[CI Badge]: https://github.com/rhysd/actionlint/workflows/CI/badge.svg?branch=main&event=push
+[CI]: https://github.com/rhysd/actionlint/actions?query=workflow%3ACI+branch%3Amain
+[api-badge]: https://pkg.go.dev/badge/github.com/rhysd/actionlint.svg
+[apidoc]: https://pkg.go.dev/github.com/rhysd/actionlint
+[repo]: https://github.com/rhysd/actionlint
+[playground]: https://rhysd.github.io/actionlint/
+[shellcheck]: https://github.com/koalaman/shellcheck
+[pyflakes]: https://github.com/PyCQA/pyflakes
+[act]: https://github.com/nektos/act
+[syntax-doc]: https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions
+[filter-pattern-doc]: https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#filter-pattern-cheat-sheet
+[script-injection-doc]: https://docs.github.com/en/actions/learn-github-actions/security-hardening-for-github-actions#understanding-the-risk-of-script-injections
+[issue-form]: https://github.com/rhysd/actionlint/issues/new
+[releases]: https://github.com/rhysd/actionlint/releases

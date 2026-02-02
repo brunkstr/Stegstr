@@ -1,33 +1,44 @@
 # Identity and embed/decode: how it works
 
-## Two identity modes
+## Fundamental: Local vs Nostr category
 
-### 1. Local (anonymous) identity — no Nostr login
+Every identity has a **category** that controls where its data goes:
 
-- When you **don’t** log in with Nostr, the app creates or reuses an **anonymous key** stored only in your browser (localStorage: `stegstr_anon_key`).
-- That key is a normal Nostr key (secp256k1). It has a public key (your “local” identity) and a private key (used to sign posts, DMs, etc.).
-- **Nothing** is sent to relays until you turn **Network** ON. All posts and DMs stay in the app and in any image you embed.
+- **Local**: Data is **only** transferred steganographically (in embedded images). Nothing from this identity is ever sent to Nostr relays, even when Network is ON.
+- **Nostr**: When Network is ON, posts, profile, likes, DMs, etc. from this identity are published to Nostr relays.
 
-### 2. Nostr (logged-in) identity
-
-- When you **Log in with Nostr** (nsec or hex private key), the app uses that key as your identity.
-- Your **existing local posts** (from the anonymous key) are **re-signed** with the Nostr key and **published to relays** once when you first turn Network ON after login (so they appear on Nostr under your account).
-- From then on, all new posts, likes, DMs, etc. are signed with the Nostr key and, if Network is ON, published to relays.
-
-So:
-
-- **Local only**: anonymous key, everything stays on device (and in images you share).
-- **Nostr login**: your Nostr key; local-only content can be “synced up” once when you turn Network ON; after that, everything can go to relays when Network is ON.
+You can **convert** an identity between Local and Nostr at any time (Identity screen → “Convert to Local” / “Convert to Nostr”). The same key stays; only the category (and thus whether network publish is allowed) changes.
 
 ---
 
-## Your example: no login, no network, then share via image
+## Two identity origins (type)
+
+### 1. Local (anonymous) identity — no Nostr login
+
+- When you **don’t** log in with Nostr, the app can create a **local identity**: an anonymous key stored only in your browser (localStorage).
+- That key is a normal Nostr key (secp256k1). It has a public key and a private key (used to sign posts, DMs, etc.).
+- New local identities start with **category: Local** (steganographic only). You can later **Convert to Nostr** if you want that identity’s data to go to relays when Network is ON.
+
+### 2. Nostr (logged-in) identity
+
+- When you **Add Nostr identity** (nsec or 64-char hex private key), the app uses that key as your identity.
+- New Nostr identities start with **category: Nostr** (will sync to relays when Network ON). You can **Convert to Local** if you want that identity’s data to stay steganographic only.
+
+So:
+
+- **Local category**: data only in images; never published to relays.
+- **Nostr category**: when Network is ON, data is published to Nostr relays.
+- **Convert**: Identity screen → use “Convert to Local” / “Convert to Nostr” on any identity to switch category.
+
+---
+
+## Your example: local category, no network, then share via image
 
 You:
 
 1. Open the app.
-2. Do **not** log in with Nostr.
-3. Do **not** turn on Network.
+2. Create or use a **local** identity (or add Nostr and **Convert to Local**).
+3. Leave Network OFF (or ON — it doesn’t matter for Local category; nothing is published).
 4. Make a post.
 5. Send a message to a Nostr public key (npub/hex).
 6. Choose **Embed image**: pick a cover image, save as PNG. The app **encrypts** your current state (feed + DMs + metadata) and hides it in the image.
@@ -67,7 +78,7 @@ So:
 **Nostr and Network:**
 
 - The data came **from the image**, not from Nostr. No Network is needed. To **see** the post they don’t need to log in; to **read** the DM they need to log in as the Nostr account you sent it to.
-- If they **later** turn Network ON and/or log in with Nostr, that doesn’t change how the already-loaded data from the image was loaded; it only affects what they fetch from relays and how their own new actions are published.
+- If they **later** turn Network ON and/or log in with Nostr, that doesn’t change how the already-loaded data from the image was loaded; it only affects what they fetch from relays and how their own new actions are published (and only for identities in **Nostr** category).
 
 ---
 
@@ -79,12 +90,14 @@ So:
 | Does the other person need to log into Nostr? | **For the post: no.** For the **DM**: **yes** (as the account you sent the message to). DMs are NIP-04 encrypted; only that account’s private key can decrypt the message content. |
 | Do they need to connect to the network? | **No.** Detect image works offline. Receiving the DM doesn’t use the network; decrypting it uses their Nostr key. |
 | What about the image? | The image is the transport. It carries the encrypted bundle. Once they run Detect image, the app has the same events (your post, your DM, etc.) in memory. To *read* the DM they must be logged in as that Nostr account. |
+| If my identity is Local, does turning Network ON send my posts to Nostr? | **No.** Local category = data only steganographic. Only identities in **Nostr** category are published to relays when Network is ON. Use “Convert to Nostr” to allow network sync for that identity. |
 
 ---
 
 ## Summary
 
-- **Local (no Nostr login)**: anonymous key, everything local; you can still embed that state into an image and share it.
+- **Local category**: data only in images; never published to relays, even when Network is ON.
+- **Nostr category**: when Network is ON, posts and profile (etc.) are published to Nostr relays.
+- **Convert**: Identity screen → “Convert to Local” / “Convert to Nostr” to switch category (same key).
 - **Embed**: saves your current events (feed + DMs + …) into an image, encrypted so only Stegstr (and optionally selected recipients) can read it.
 - **Detect**: reads the image, decrypts the bundle, and loads those events into the app. No Nostr login and no Network needed for that.
-- **Two identities**: (1) local anonymous key, or (2) Nostr key after login; “sync to Nostr” happens when you turn Network ON after logging in (re-sign and publish your previous local-only events once).
