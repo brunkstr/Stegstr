@@ -57,6 +57,7 @@ jobs:
         run: npm ci
 
       - name: "Build Tauri app (macOS app only to avoid bundle_dmg.sh in CI)"
+        shell: bash
         env:
           CI: true
         run: |
