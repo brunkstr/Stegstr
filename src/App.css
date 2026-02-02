@@ -362,24 +362,29 @@ textarea { resize: vertical; min-height: 60px; }
 .btn-stego { width: 100%; }
 .btn-quick-test { font-size: 0.85rem; background: #e8f5e9; border-color: #4caf50; color: #2e7d32; }
 .btn-quick-test:hover { background: #c8e6c9; }
-.acting-identity { font-size: 0.8rem; color: #666; margin-left: 0.5rem; }
+.acting-identity { font-size: 0.8rem; color: #555; margin-left: 0.5rem; }
 .identity-view .identity-actions { display: flex; gap: 0.5rem; margin: 1rem 0; }
-.identity-category-intro { font-size: 0.9rem; margin: 0.5rem 0 1rem; max-width: 520px; line-height: 1.4; }
-.identity-list { list-style: none; padding: 0; margin: 0; }
-.identity-item { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem 0; border-bottom: 1px solid #eee; }
-.identity-item:last-child { border-bottom: none; }
-.identity-pubkey { font-family: monospace; font-size: 0.75rem; max-width: 100%; word-break: break-all; }
-.identity-viewing, .identity-acting { display: flex; align-items: center; gap: 0.25rem; font-size: 0.85rem; }
-.identity-label { flex: 1; }
-.identity-type { font-size: 0.8rem; }
-.identity-category-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; width: 100%; margin-top: 0.35rem; padding-top: 0.35rem; border-top: 1px dashed #e0e0e0; }
-.identity-category-label { font-size: 0.85rem; font-weight: 600; color: #333; }
-.identity-category-badge { font-size: 0.85rem; padding: 0.15rem 0.4rem; border-radius: 4px; background: #f0f0f0; }
-.identity-category-badge[data-category="nostr"] { background: #e3f2fd; color: #1565c0; }
-.identity-convert { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.85rem; padding: 0.35rem 0.6rem; }
-.identity-convert-info { cursor: help; font-size: 0.95rem; opacity: 0.8; margin-left: 0.1rem; }
-.identity-convert-info:hover { opacity: 1; }
-.identity-private { display: flex; align-items: center; gap: 0.25rem; font-size: 0.8rem; color: #666; }
+.identity-view-desc { font-size: 0.9rem; margin: 0.5rem 0 1rem; max-width: 560px; line-height: 1.45; }
+.identity-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 1rem; }
+.identity-card { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 10px; padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.identity-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
+.identity-card-name { font-weight: 600; font-size: 1rem; }
+.identity-card-type { font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 6px; background: #e8e8e8; color: #555; text-transform: capitalize; }
+.identity-card-type[data-type="nostr"] { background: #d0d0d0; color: #333; }
+.identity-card-view, .identity-card-act { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; cursor: pointer; }
+.identity-card-remove { margin-left: auto; font-size: 0.8rem; color: #888; background: none; border: none; cursor: pointer; padding: 0.2rem 0.4rem; }
+.identity-card-remove:hover { color: #c00; text-decoration: underline; }
+.identity-card-pubkey { font-family: monospace; font-size: 0.75rem; word-break: break-all; color: #555; }
+.identity-card-pubkey .pubkey-copy { cursor: pointer; }
+.identity-card-pubkey .pubkey-copy:hover { text-decoration: underline; color: #111; }
+.identity-card-category { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.identity-category-badge { font-size: 0.85rem; font-weight: 600; padding: 0.35rem 0.65rem; border-radius: 6px; background: #e0e0e0; color: #333; }
+.identity-category-badge[data-category="nostr"] { background: #888; color: #fff; }
+.identity-convert-btn { font-size: 0.9rem; padding: 0.4rem 0.85rem; border-radius: 6px; background: #fff; border: 1px solid #666; color: #333; cursor: pointer; font-weight: 500; }
+.identity-convert-btn:hover { background: #eee; border-color: #444; }
+.identity-convert-info { cursor: help; font-size: 1rem; color: #555; margin-left: 0.15rem; }
+.identity-convert-info:hover { color: #111; }
+.identity-card-private { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; color: #555; cursor: pointer; margin-left: auto; }
 .event-identity-tag { font-size: 0.7rem; color: #666; background: #f0f0f0; padding: 0.1rem 0.3rem; border-radius: 4px; margin-left: 0.25rem; }
 .widget h3 { margin: 0 0 0.5rem; font-size: 1rem; font-weight: 600; }
 
@@ -514,8 +519,26 @@ textarea { resize: vertical; min-height: 60px; }
   .network-toggle.on { background: #eee; border-color: #eee; }
   .network-toggle.on .toggle-thumb { background: #111; }
   .network-toggle.on .toggle-state.on { color: #111; }
-  .muted, .profile-note, .profile-about, .relay-status, .note-time, .event-meta, .msg-meta { color: #999; }
-  .note-avatar { color: #999; }
-  .network-toggle .toggle-state.off, .network-status { color: #999; }
+  .muted, .profile-note, .profile-about, .relay-status, .note-time, .event-meta, .msg-meta { color: #b0b0b0; }
+  .note-avatar { color: #b0b0b0; }
+  .network-toggle .toggle-state.off, .network-status { color: #b0b0b0; }
   .note-replies { border-color: #444; }
+  /* Identity: readable text and no blue */
+  .identity-view-desc, .identity-card-name { color: #eee; }
+  .identity-card { background: #2a2a2a; border-color: #444; }
+  .identity-card-type { background: #444; color: #ddd; }
+  .identity-card-type[data-type="nostr"] { background: #555; color: #eee; }
+  .identity-card-remove { color: #aaa; }
+  .identity-card-remove:hover { color: #f66; }
+  .identity-card-pubkey, .identity-card-pubkey .pubkey-copy { color: #b0b0b0; }
+  .identity-card-pubkey .pubkey-copy:hover { color: #eee; }
+  .identity-category-badge { background: #444; color: #eee; }
+  .identity-category-badge[data-category="nostr"] { background: #555; color: #eee; }
+  .identity-convert-btn { background: #333; border-color: #666; color: #eee; }
+  .identity-convert-btn:hover { background: #444; border-color: #888; }
+  .identity-convert-info { color: #b0b0b0; }
+  .identity-convert-info:hover { color: #eee; }
+  .identity-card-private { color: #b0b0b0; }
+  .acting-identity { color: #b0b0b0; }
+  .identity-card-view, .identity-card-act { color: #eee; }
 }

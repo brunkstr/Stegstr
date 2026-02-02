@@ -1570,8 +1570,8 @@ function App({ profile }: { profile: string | null }) {
             <span className="network-status">{networkEnabled ? "ON" : "OFF"}</span>
           </div>
           {actingIdentity && (
-            <span className="acting-identity" title={`Acting as ${profiles[actingPubkey ?? ""]?.name || actingIdentity.label}`}>
-              as {profiles[actingPubkey ?? ""]?.name || actingIdentity.label}
+            <span className="acting-identity" title={`Acting as ${profiles[actingPubkey ?? ""]?.name || actingIdentity.label} (${(actingIdentity.category ?? (actingIdentity.type === "nostr" ? "nostr" : "local")) === "nostr" ? "Nostr" : "Local"})`}>
+              as {profiles[actingPubkey ?? ""]?.name || actingIdentity.label} ({(actingIdentity.category ?? (actingIdentity.type === "nostr" ? "nostr" : "local")) === "nostr" ? "Nostr" : "Local"})
             </span>
           )}
           {relayStatus && <span className="relay-status">{relayStatus}</span>}
@@ -2420,8 +2420,7 @@ function App({ profile }: { profile: string | null }) {
           {view === "identity" && (
             <section className="identity-view">
               <h2>Identity</h2>
-              <p className="muted">Check identities to view their content; choose one as acting for new posts, replies, and DMs.</p>
-              <p className="identity-category-intro muted">Each identity has a <strong>category</strong>: <strong>Local</strong> = data only in embedded images (never sent to Nostr). <strong>Nostr</strong> = when Network is ON, posts and profile go to relays. Use <strong>Convert to Local</strong> / <strong>Convert to Nostr</strong> to switch (hover ⓘ on the button for details).</p>
+              <p className="identity-view-desc muted">Choose which identities to view and which one acts (posts, DMs). Local = data only in images; Nostr = syncs to relays when Network is ON. Convert between them anytime.</p>
               <div className="identity-actions">
                 <button type="button" className="btn-primary" onClick={handleGenerate}>Create local identity</button>
                 <button type="button" className="btn-secondary" onClick={() => setLoginFormOpen(true)}>Add Nostr identity</button>
@@ -2435,92 +2434,45 @@ function App({ profile }: { profile: string | null }) {
                   const category = id.category ?? (id.type === "nostr" ? "nostr" : "local");
                   const categoryExplainer = "Local: data is only shared via embedded images (steganographic). Nostr: when Network is ON, your posts and profile are published to Nostr relays. You can convert between Local and Nostr at any time.";
                   return (
-                    <li key={id.id} className="identity-item">
-                      <label className="identity-viewing">
-                        <input
-                          type="checkbox"
-                          checked={isViewing}
-                          onChange={() => {
-                            setViewingPubkeys((prev) => {
-                              const next = new Set(prev);
-                              if (isViewing) next.delete(pk);
-                              else next.add(pk);
-                              return next;
-                            });
-                          }}
-                        />
-                        View
-                      </label>
-                      <label className="identity-acting">
-                        <input
-                          type="radio"
-                          name="acting"
-                          checked={isActing}
-                          onChange={() => setActingPubkey(pk)}
-                        />
-                        Act
-                      </label>
-                      <span className="identity-label">{displayLabel}</span>
-                      <span
-                        className="identity-pubkey pubkey-copy muted"
-                        title="Click to copy npub"
-                        onClick={async () => {
-                          const npub = Nostr.nip19.npubEncode(pk);
-                          await navigator.clipboard.writeText(npub);
-                          setStatus("Copied!");
-                          setTimeout(() => setStatus(""), 1500);
-                        }}
-                      >
-                        {Nostr.nip19.npubEncode(pk)}
-                      </span>
-                      <span className="identity-type muted">({id.type})</span>
-                      <div className="identity-category-row">
-                        <span className="identity-category-label">Category:</span>
+                    <li key={id.id} className="identity-card">
+                      <div className="identity-card-header">
+                        <span className="identity-card-name">{displayLabel}</span>
+                        <span className="identity-card-type" data-type={id.type}>{id.type}</span>
+                        <label className="identity-card-view">
+                          <input type="checkbox" checked={isViewing} onChange={() => setViewingPubkeys((prev) => { const n = new Set(prev); if (isViewing) n.delete(pk); else n.add(pk); return n; })} />
+                          View
+                        </label>
+                        <label className="identity-card-act">
+                          <input type="radio" name="acting" checked={isActing} onChange={() => setActingPubkey(pk)} />
+                          Act
+                        </label>
+                        {identities.length > 1 && (
+                          <button type="button" className="identity-card-remove" onClick={() => { const remaining = identities.filter((i) => i.id !== id.id); setIdentities(remaining); setViewingPubkeys((p) => { const n = new Set(p); n.delete(pk); return n; }); if (isActing && remaining[0]) setActingPubkey(Nostr.getPublicKey(Nostr.hexToBytes(remaining[0].privKeyHex))); }} title="Remove identity">Remove</button>
+                        )}
+                      </div>
+                      <div className="identity-card-pubkey">
+                        <span className="pubkey-copy" title="Click to copy npub" onClick={async () => { await navigator.clipboard.writeText(Nostr.nip19.npubEncode(pk)); setStatus("Copied!"); setTimeout(() => setStatus(""), 1500); }}>{Nostr.nip19.npubEncode(pk)}</span>
+                      </div>
+                      <div className="identity-card-category">
                         <span className="identity-category-badge" data-category={category}>{category === "nostr" ? "Nostr" : "Local"}</span>
                         <button
                           type="button"
-                          className="btn-secondary identity-convert"
-                          onClick={(e) => {
-                            e.preventDefault();
+                          className="identity-convert-btn"
+                          onClick={() => {
                             const nextCat = category === "nostr" ? "local" : "nostr";
-                            setIdentities((prev) =>
-                              prev.map((i) => (i.id === id.id ? { ...i, category: nextCat } : i))
-                            );
+                            setIdentities((prev) => prev.map((i) => (i.id === id.id ? { ...i, category: nextCat } : i)));
                             setStatus(nextCat === "local" ? "Identity is now Local (steganographic only)" : "Identity is now Nostr (will sync when Network ON)");
                           }}
                           title={category === "nostr" ? "Convert to Local (data only in images)" : "Convert to Nostr (publish to relays when Network ON)"}
                         >
                           {category === "nostr" ? "Convert to Local" : "Convert to Nostr"}
-                          <span className="identity-convert-info" title={categoryExplainer} aria-label="Info" onClick={(e) => e.stopPropagation()}>ⓘ</span>
                         </button>
+                        <span className="identity-convert-info" title={categoryExplainer} aria-label="Info">ⓘ</span>
+                        <label className="identity-card-private">
+                          <input type="checkbox" checked={!!id.isPrivate} onChange={() => setIdentities((prev) => prev.map((i) => (i.id === id.id ? { ...i, isPrivate: !i.isPrivate } : i)))} />
+                          Private
+                        </label>
                       </div>
-                      <label className="identity-private">
-                        <input
-                          type="checkbox"
-                          checked={!!id.isPrivate}
-                          onChange={() => {
-                            setIdentities((prev) =>
-                              prev.map((i) => (i.id === id.id ? { ...i, isPrivate: !i.isPrivate } : i))
-                            );
-                          }}
-                        />
-                        Private
-                      </label>
-                      {identities.length > 1 && (
-                        <button
-                          type="button"
-                          className="btn-delete muted"
-                          onClick={() => {
-                            const remaining = identities.filter((i) => i.id !== id.id);
-                            setIdentities(remaining);
-                            setViewingPubkeys((prev) => { const n = new Set(prev); n.delete(pk); return n; });
-                            if (isActing && remaining[0]) setActingPubkey(Nostr.getPublicKey(Nostr.hexToBytes(remaining[0].privKeyHex)));
-                          }}
-                          title="Remove identity"
-                        >
-                          Remove
-                        </button>
-                      )}
                     </li>
                   );
                 })}
