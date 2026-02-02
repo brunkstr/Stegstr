@@ -18,10 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Run actionlint
-        run: |
-          VERSION="v1.7.0"
-          curl -sSL "https://github.com/rhysd/actionlint/releases/download/${VERSION}/actionlint_1.7.0_linux_amd64.tar.gz" | tar xz
-          chmod +x actionlint
-          ./actionlint -color
+      
+      - name: Check workflow files with actionlint
+        uses: docker://rhysd/actionlint:latest
+        with:
+          args: -color
