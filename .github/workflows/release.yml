@@ -56,8 +56,24 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Tauri app
-        run: npm run tauri build -- ${{ matrix.args }}
+      - name: Build Tauri app (macOS: app only to avoid bundle_dmg.sh failure in CI)
+        env:
+          CI: true
+        run: |
+          if [[ "${{ matrix.platform }}" == "macos-latest" ]]; then
+            npm run tauri build -- ${{ matrix.args }} --bundles app
+          else
+            npm run tauri build -- ${{ matrix.args }}
+          fi
+
+      - name: Create DMG from app (macOS only)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Stegstr.app"
+          DMG_DIR="src-tauri/target/universal-apple-darwin/release/bundle/dmg"
+          mkdir -p "$DMG_DIR"
+          hdiutil create -volname "Stegstr" -srcfolder "$APP_PATH" -ov -format UDZO -imagekey zlib-level=9 "$DMG_DIR/Stegstr-macOS.dmg"
 
       - name: Set bundle path
         id: bundle
