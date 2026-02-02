@@ -56,7 +56,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Tauri app (macOS: app only to avoid bundle_dmg.sh failure in CI)
+      - name: "Build Tauri app (macOS app only to avoid bundle_dmg.sh in CI)"
         env:
           CI: true
         run: |
