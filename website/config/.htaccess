@@ -1,7 +1,0 @@
-# Serve relay.json with correct MIME type (some cPanel hosts block or mis-serve .json)
-<Files "relay.json">
-  Header set Content-Type "application/json; charset=utf-8"
-  Header set Access-Control-Allow-Origin "*"
-</Files>
-
-# If your host blocks .json entirely, the app will fall back to relay.php

@@ -25,3 +25,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Website and browser app — hosted separately, not part of this repo
+website/
+stegstr-website.zip
