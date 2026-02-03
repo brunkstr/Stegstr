@@ -496,6 +496,7 @@ function App({ profile }: { profile: string | null }) {
     })
     .sort((a, b) => b.sortAt - a.sortAt);
 
+  const hasNostrIdentity = identities.some((i) => i.category === "nostr" || i.type === "nostr");
   useEffect(() => {
     const authors = Array.from(viewingPubkeys).filter((pk) => pk && /^[a-fA-F0-9]{64}$/.test(pk));
     if (!networkEnabled || authors.length === 0) {
@@ -503,6 +504,13 @@ function App({ profile }: { profile: string | null }) {
       relayRef.current = null;
       eventBufferRef.current = [];
       setRelayStatus("");
+      return;
+    }
+    if (!hasNostrIdentity) {
+      relayRef.current?.close();
+      relayRef.current = null;
+      eventBufferRef.current = [];
+      setRelayStatus("Local only — add Nostr identity to sync");
       return;
     }
     setRelayStatus("Connecting…");
@@ -566,7 +574,7 @@ function App({ profile }: { profile: string | null }) {
       eventBufferRef.current = [];
       setRelayStatus("");
     };
-  }, [networkEnabled, [...viewingPubkeys].join(","), relayUrls.join(",")]);
+  }, [networkEnabled, hasNostrIdentity, [...viewingPubkeys].join(","), relayUrls.join(",")]);
 
   useEffect(() => {
     const sentinel = loadMoreSentinelRef.current;

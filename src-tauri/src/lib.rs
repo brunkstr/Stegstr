@@ -1,4 +1,5 @@
-mod stego;
+pub mod stego;
+pub mod stego_crypto;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
