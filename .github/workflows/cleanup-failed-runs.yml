@@ -1,0 +1,41 @@
+# Manual cleanup: delete failed and cancelled workflow runs so the Actions tab looks clean.
+# Run from: Actions → "Clean up failed workflow runs" → Run workflow
+
+name: Clean up failed workflow runs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete failed and cancelled runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          PAGE=1
+          PER_PAGE=100
+          while true; do
+            echo "Fetching runs page $PAGE..."
+            RESP=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/$REPO/actions/runs?per_page=$PER_PAGE&page=$PAGE")
+            COUNT=$(echo "$RESP" | jq -r '.workflow_runs | length')
+            [ "$COUNT" -eq 0 ] && break
+            IDs=$(echo "$RESP" | jq -r '.workflow_runs[] | select(.conclusion == "failure" or .conclusion == "cancelled") | .id')
+            for RUN_ID in $IDs; do
+              [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ] && continue
+              echo "Deleting run $RUN_ID..."
+              curl -s -w "%{http_code}" -o /dev/null -X DELETE -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID" || true
+            done
+            [ "$COUNT" -lt "$PER_PAGE" ] && break
+            PAGE=$((PAGE+1))
+            [ "$PAGE" -gt 20 ] && break
+          done
+          echo "Cleanup finished."
