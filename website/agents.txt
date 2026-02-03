@@ -1,0 +1,57 @@
+Name: Stegstr
+Logo: https://stegstr.com/images/logo.png
+Description: Stegstr is a steganographic social networking app. It hides Nostr messages inside images using LSB/DWT steganography. Users can embed their feed (posts, DMs) into PNG images and share them anywhere; recipients use Detect to load the hidden content. No registration required. Works offline. Available for macOS, Windows, Linux, and Android.
+Communication: Web
+Author: https://github.com/brunkstr/Stegstr
+
+# Capabilities (for AI agents and automation)
+Capability-Decode: Decode Stegstr payload from a PNG file. Input: file path to PNG. Output: raw payload bytes (UTF-8 JSON bundle when decrypted, or base64 if binary). Use CLI: stegstr decode <path> or desktop app Detect.
+Capability-Embed: Embed a payload into a cover PNG. Input: cover image path, output path, payload (UTF-8 JSON or base64). Output: path to written PNG. Use CLI: stegstr embed <cover.png> -o <out.png> --payload <json_or_path> or desktop app Embed.
+
+# Formats
+Format-Image: PNG (lossless required; JPEG/lossy will corrupt hidden data)
+Payload-Format: Raw layer: magic STEGSTR (7 bytes) + 4-byte big-endian length + payload. Decrypted payload: JSON bundle { "version": 1, "events": [ Nostr events ] }. See Wiki How It Works.
+Schema-Bundle: https://github.com/brunkstr/Stegstr/blob/main/schema/bundle.schema.json
+
+# Programmatic access (CLI)
+CLI-Page: https://stegstr.com/wiki/cli.html
+For-Agents: https://stegstr.com/wiki/for-agents.html
+
+# CLI: how to build (run these commands)
+CLI-Build-Step1: git clone https://github.com/brunkstr/Stegstr.git
+CLI-Build-Step2: cd Stegstr/src-tauri
+CLI-Build-Step3: cargo build --release --bin stegstr-cli
+CLI-Binary: Stegstr/src-tauri/target/release/stegstr-cli (Windows: target/release/stegstr-cli.exe)
+CLI-Prerequisite: Rust (latest stable). Install from https://rustup.rs
+
+# CLI: commands (exact syntax; replace IMAGE.png, COVER.png, OUT.png, MESSAGE, BUNDLE.json, HEX64 with concrete values)
+CLI-Command-Decode-Raw: stegstr-cli decode IMAGE.png
+CLI-Command-Decode-Decrypt: stegstr-cli decode IMAGE.png --decrypt
+CLI-Command-Detect: stegstr-cli detect IMAGE.png
+CLI-Command-Embed-String: stegstr-cli embed COVER.png -o OUT.png --payload PAYLOAD_STRING
+CLI-Command-Embed-File: stegstr-cli embed COVER.png -o OUT.png --payload @BUNDLE.json
+CLI-Command-Embed-Encrypt: stegstr-cli embed COVER.png -o OUT.png --payload @BUNDLE.json --encrypt
+CLI-Command-Post-Stdout: stegstr-cli post "MESSAGE"
+CLI-Command-Post-File: stegstr-cli post "MESSAGE" --output bundle.json
+CLI-Command-Post-WithKey: stegstr-cli post "MESSAGE" --privkey-hex HEX64 --output bundle.json
+
+# CLI: behavior
+CLI-Exit: All commands exit 0 on success, non-zero on error. Decode/detect write to stdout; embed writes to -o path; post writes to --output path or stdout.
+CLI-Output-Decode: Without --decrypt: raw payload (UTF-8 JSON text or base64:DATA). With --decrypt: JSON bundle { "version": 1, "events": [ ... ] }.
+CLI-Output-Detect: JSON bundle { "version": 1, "events": [ ... ] } (same as decode --decrypt).
+CLI-Output-Post: JSON bundle { "version": 1, "events": [ { "kind": 1, "content": "... Sent by Stegstr.", ... } ] }.
+
+# Download URLs (one-click, direct)
+Download-macOS: https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-macOS.dmg
+Download-Windows: https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-Windows.exe
+Download-Linux-deb: https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-Linux.deb
+Download-Linux-AppImage: https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-Linux.AppImage
+
+# Key pages
+Getting-Started: https://stegstr.com/getting-started.html
+Wiki: https://stegstr.com/wiki/index.html
+CLI: https://stegstr.com/wiki/cli.html
+How-It-Works: https://stegstr.com/wiki/how-it-works.html
+FAQ: https://stegstr.com/wiki/faq.html
+For-Agents: https://stegstr.com/wiki/for-agents.html
+GitHub: https://github.com/brunkstr/Stegstr

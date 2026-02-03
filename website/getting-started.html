@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Getting Started - Stegstr</title>
+  <meta name="description" content="Learn how to download, install, and use Stegstr for steganographic social networking.">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" type="image/png" href="images/logo-square.png">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav-inner">
+      <a href="index.html" class="logo-link">
+        <img src="images/logo.png" alt="Stegstr" height="40">
+        <span>Stegstr</span>
+      </a>
+      <div class="nav-links">
+        <a href="downloads.html">Downloads</a>
+        <a href="getting-started.html">Get Started</a>
+        <a href="wiki/index.html">Wiki</a>
+        <a href="https://github.com/brunkstr/Stegstr" target="_blank" rel="noopener noreferrer">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main class="page-content">
+    <h1>Getting Started</h1>
+    <p>This guide walks you through installing Stegstr and creating your first steganographic message.</p>
+
+    <h2>1. Download and Install</h2>
+    <p>Download Stegstr for your platform from the <a href="downloads.html">Downloads page</a> or <a href="https://github.com/brunkstr/Stegstr/releases" target="_blank" rel="noopener noreferrer">GitHub Releases</a>.</p>
+    <ul>
+      <li><strong>macOS:</strong> Open the .dmg, drag Stegstr to Applications.</li>
+      <li><strong>Windows:</strong> Run the .exe installer.</li>
+      <li><strong>Linux:</strong> Install the .deb or run the .AppImage.</li>
+      <li><strong>Android:</strong> Build the APK or install from a release.</li>
+    </ul>
+
+    <h2>2. First-Time Setup</h2>
+    <p>When you open Stegstr:</p>
+    <ul>
+      <li><strong>No login required:</strong> The app creates an anonymous local identity. Nothing is sent anywhere.</li>
+      <li><strong>Optional Nostr login:</strong> Use your nsec or 64-char hex key to sign in with your Nostr account. No internet needed for login.</li>
+      <li><strong>Network toggle:</strong> Keep it OFF for 100% local use. Turn ON to connect to Nostr relays when you want to sync.</li>
+    </ul>
+
+    <h2>3. Create Your First Post</h2>
+    <p>Write a post in the feed. All posts automatically end with a Stegstr suffix so others can identify the source. The compose UI enforces a character limit (4991 user chars) to reserve space.</p>
+
+    <h2>4. Embed in an Image</h2>
+    <p>To share your feed (posts, DMs, etc.) via an image:</p>
+    <ol>
+      <li>Click <strong>Embed</strong> (or Save to image).</li>
+      <li>Choose a cover image (PNG).</li>
+      <li>Stegstr encrypts your current state and hides it in the image using LSB steganography.</li>
+      <li>Save the PNG and share it however you like—text, email, social media.</li>
+    </ol>
+
+    <h2>5. Detect Messages from an Image</h2>
+    <p>To load content from someone else’s Stegstr image:</p>
+    <ol>
+      <li>Click <strong>Detect</strong> (or Load from image).</li>
+      <li>Select the PNG that contains Stegstr data.</li>
+      <li>The app decodes the image, decrypts the bundle, and merges the events into your feed.</li>
+    </ol>
+    <p>No Nostr login or network connection required for Detect.</p>
+
+    <h2>Next Steps</h2>
+    <p>Browse the <a href="wiki/index.html">Wiki</a> for technical details on how it works, Nostr integration, and FAQs.</p>
+  </main>
+
+  <footer class="site-footer">
+    <p>Stegstr — Steganographic Social Networking. <a href="https://github.com/brunkstr/Stegstr">GitHub</a> · <a href="wiki/index.html">Wiki</a> · MIT License</p>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

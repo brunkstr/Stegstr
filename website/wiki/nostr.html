@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nostr Integration - Stegstr Wiki</title>
+  <meta name="description" content="How Stegstr integrates with Nostr: NIP compatibility, identity modes, and relay connection.">
+  <link rel="stylesheet" href="../css/style.css">
+  <link rel="icon" type="image/png" href="../images/logo-square.png">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav-inner">
+      <a href="../index.html" class="logo-link">
+        <img src="../images/logo.png" alt="Stegstr" height="40">
+        <span>Stegstr</span>
+      </a>
+      <div class="nav-links">
+        <a href="../downloads.html">Downloads</a>
+        <a href="../getting-started.html">Get Started</a>
+        <a href="index.html">Wiki</a>
+        <a href="https://github.com/brunkstr/Stegstr" target="_blank" rel="noopener noreferrer">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <div class="wiki-layout">
+    <aside class="wiki-nav">
+      <ul>
+        <li><a href="index.html">Wiki Home</a></li>
+        <li><a href="how-it-works.html">How It Works</a></li>
+        <li><a href="nostr.html" class="active">Nostr Integration</a></li>
+        <li><a href="cli.html">CLI</a></li>
+        <li><a href="faq.html">FAQ</a></li>
+        <li><a href="for-agents.html">For AI Agents</a></li>
+      </ul>
+    </aside>
+    <main class="wiki-content page-content">
+      <h1>Nostr Integration</h1>
+
+      <p>Stegstr is a <strong>Nostr client</strong> with steganographic transport. It uses Nostr events, keys, and (optionally) relays. Learn more at <a href="https://nostr.com" target="_blank" rel="noopener noreferrer">nostr.com</a>.</p>
+
+      <h2>Identity Modes</h2>
+
+      <h3>1. Local (Anonymous) Identity</h3>
+      <ul>
+        <li>When you <strong>don't log in</strong> with Nostr, the app creates or reuses an anonymous key stored only locally (e.g., <code>localStorage</code> key <code>stegstr_anon_key</code> on desktop).</li>
+        <li>That key is a normal Nostr secp256k1 key: it has a public key (your "local" identity) and a private key for signing posts and DMs.</li>
+        <li><strong>Nothing</strong> is sent to relays until you turn Network ON. All posts and DMs stay in the app and in any image you embed.</li>
+        <li>You can still embed and share images; recipients can Detect them without logging in.</li>
+      </ul>
+
+      <h3>2. Nostr (Logged-in) Identity</h3>
+      <ul>
+        <li>Log in with your <strong>nsec</strong> (bech32-encoded private key) or <strong>64-character hex</strong> private key. No internet is required for login.</li>
+        <li>Your existing local-only posts are <strong>re-signed</strong> with your Nostr key and <strong>published to relays once</strong> when you first turn Network ON after login. They then appear on Nostr under your account.</li>
+        <li>From that point on, new posts, likes, DMs, etc. are signed with your Nostr key. When Network is ON, they are published to relays.</li>
+        <li>Recipients-mode encryption (embed for specific pubkeys) uses your Nostr key for NIP-04; include your own pubkey if you want to open the image later.</li>
+      </ul>
+
+      <h2>Sync Behavior</h2>
+      <p>When you turn <strong>Network ON</strong> for the first time after logging in:</p>
+      <ul>
+        <li>The app re-signs all your previous local-only events (posts, DMs, profile) with your Nostr key.</li>
+        <li>Those events are published to relays <strong>once</strong>. They will then appear in other Nostr clients.</li>
+        <li>Ongoing activity (new posts, likes, DMs) is published to relays whenever Network is ON.</li>
+      </ul>
+      <p>If you stay in local-only mode, no relay traffic occurs. Detect and Embed work fully offline.</p>
+
+      <h2>NIP Compatibility</h2>
+      <ul>
+        <li><strong>Events:</strong> Kind 1 (notes), kind 4 (DMs), kind 0 (profiles), and others. Bundled events are standard Nostr JSON.</li>
+        <li><strong>DMs:</strong> NIP-04 style encryption (ECDH + shared secret). Only the sender and recipient can decrypt DM content.</li>
+        <li><strong>Signing:</strong> Desktop may use a stub signer for local/embed use; full NIP-01 (secp256k1 + Schnorr) requires <code>nostr-tools</code>. Android uses full Nostr signing.</li>
+        <li>See <a href="https://github.com/nostr-protocol/nips" target="_blank" rel="noopener noreferrer">Nostr NIPs</a> for the full specification.</li>
+      </ul>
+
+      <h2>Network Toggle</h2>
+      <p>The <strong>Network toggle</strong> (top-right) controls relay connection:</p>
+      <ul>
+        <li><strong>OFF:</strong> 100% local. No relay traffic. Detect and Embed work offline. Posts stay in-app and in images.</li>
+        <li><strong>ON:</strong> Connects to Nostr relays. Syncs feed from relays and publishes your events when logged in.</li>
+      </ul>
+
+      <h2>Stegstr Relay Proxy</h2>
+      <p>By default, the desktop app connects to a <strong>Stegstr-operated relay proxy</strong> (a single WebSocket URL). The proxy forwards traffic to a configurable set of Nostr relays. Relay selection is controlled server-side, so we can change or add backend relays without an app update. Power users can still add or switch to custom relay URLs in Settings. For deploy and operations, see the <a href="../relay-proxy/README.md">relay proxy README</a> in the website repo.</p>
+
+      <h2>Post Branding</h2>
+      <p>All kind 1 notes published through Stegstr automatically end with <code> Stegster</code> so they are identifiable as coming from this app. The compose UI enforces a <strong>4991-character limit</strong> (user-typed chars) to reserve space for the suffix.</p>
+
+      <h2>DMs in Images</h2>
+      <p>When you embed an image containing DMs (kind 4 events):</p>
+      <ul>
+        <li>DM content is NIP-04 encrypted. Only the sender and the recipient's private key can decrypt.</li>
+        <li>To <strong>read</strong> a DM, the recipient must log in as the Nostr account you sent it to.</li>
+        <li>To <strong>see</strong> the post (kind 1), no login is needed—Detect merges it into the feed. The DM appears in Messages, but content shows "[Decryption failed]" until they log in with the correct key.</li>
+      </ul>
+    </main>
+  </div>
+
+  <footer class="site-footer">
+    <p>Stegstr — Steganographic Social Networking. <a href="https://github.com/brunkstr/Stegstr" target="_blank" rel="noopener noreferrer">GitHub</a> · <a href="index.html">Wiki</a> · MIT License</p>
+  </footer>
+
+  <script src="../js/main.js"></script>
+</body>
+</html>

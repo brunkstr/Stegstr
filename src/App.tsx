@@ -1,8 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import * as Nostr from "./nostr-stub";
+import { isWeb, pickImageFile, decodeStegoFile, encodeStegoToBlob, downloadBlob } from "./platform-web";
+import { getTauri } from "./platform-desktop";
 import { connectRelays, publishEvent, DEFAULT_RELAYS, getRelayUrls } from "./relay";
 import { extractImageUrls, mediaUrlsFromTags, isVideoUrl, contentWithoutImages, uint8ArrayToBase64 } from "./utils";
 import { uploadMedia } from "./upload";
@@ -154,6 +153,7 @@ function App({ profile }: { profile: string | null }) {
   const [embedModalOpen, setEmbedModalOpen] = useState(false);
   const [embedMode, setEmbedMode] = useState<"open" | "recipients">("open");
   const [embedSelectedPubkeys, setEmbedSelectedPubkeys] = useState<Set<string>>(new Set());
+  const [embedCoverFile, setEmbedCoverFile] = useState<File | null>(null);
   const [selectedMessagePeer, setSelectedMessagePeer] = useState<string | null>(null);
   const [dmReplyContent, setDmReplyContent] = useState("");
   const [newMessagePubkeyInput, setNewMessagePubkeyInput] = useState("");
@@ -838,16 +838,115 @@ function App({ profile }: { profile: string | null }) {
 
   const handleLoadFromImage = useCallback(async (providedPath?: string | null) => {
     setDecodeError("");
-    const w = typeof window !== "undefined" ? window : (globalThis as unknown as Window);
-    if (!(w as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
-      setDecodeError("Detect requires the Stegstr desktop app. Run: npm run tauri dev (not in a browser)");
+    if (isWeb()) {
+      let file: File | null;
+      if (providedPath !== undefined && providedPath !== null) return;
+      setDetecting(true);
+      try {
+        file = await pickImageFile();
+      } finally {
+        setDetecting(false);
+      }
+      if (!file) {
+        setStatus("Cancelled");
+        logger.logAction("detect_cancelled", "User cancelled file picker");
+        return;
+      }
+      setDetecting(true);
+      logger.logAction("detect_started", "Decoding stego image (browser)", { name: file.name });
+      try {
+        const result = await decodeStegoFile(file);
+        if (!result.ok || !result.payload) {
+          const err = result.error || "Decode failed";
+          setDecodeError(err);
+          logger.logAction("detect_error", err, { name: file.name });
+          return;
+        }
+        const raw = result.payload;
+        let jsonString: string;
+        if (raw.startsWith("base64:")) {
+          const bytes = Uint8Array.from(atob(raw.slice(7)), (c) => c.charCodeAt(0));
+          if (!stegoCrypto.isEncryptedPayload(bytes)) {
+            setDecodeError("Not a Stegstr encrypted image");
+            logger.logAction("detect_error", "Not a Stegstr encrypted image", { name: file.name });
+            return;
+          }
+          let keysToTry = identities
+            .filter((i) => viewingPubkeys.has(Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex))))
+            .map((i) => i.privKeyHex);
+          if (keysToTry.length === 0) keysToTry = [effectivePrivKey];
+          let lastErr: Error | null = null;
+          jsonString = "";
+          for (const key of keysToTry) {
+            try {
+              jsonString = await stegoCrypto.decryptPayload(bytes, key);
+              lastErr = null;
+              break;
+            } catch (e) {
+              lastErr = e instanceof Error ? e : new Error(String(e));
+            }
+          }
+          if (!jsonString && lastErr) {
+            try {
+              jsonString = await stegoCrypto.decryptApp(bytes);
+              const parsed = JSON.parse(jsonString);
+              if (typeof parsed === "object" && parsed !== null && Array.isArray(parsed.events)) lastErr = null;
+            } catch (_) {}
+          }
+          if (!jsonString) throw lastErr ?? new Error("Decryption failed");
+        } else if (raw.trimStart().startsWith("{")) {
+          jsonString = raw;
+        } else {
+          setDecodeError("Invalid payload");
+          return;
+        }
+        const bundle = JSON.parse(jsonString) as NostrStateBundle;
+        if (!Array.isArray(bundle.events)) {
+          setDecodeError("Invalid payload");
+          return;
+        }
+        const normalized = bundle.events.map((e) => ({
+          ...e,
+          kind: typeof e.kind === "number" ? e.kind : parseInt(String(e.kind), 10) || 1,
+          created_at: typeof e.created_at === "number" ? e.created_at : Math.floor(Date.now() / 1000),
+        }));
+        setEvents((prev) => {
+          const byId = new Map(prev.map((e) => [e.id, e]));
+          normalized.forEach((e) => byId.set(e.id, e));
+          return Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
+        });
+        const profileUpdates: Record<string, { name?: string; about?: string; picture?: string; banner?: string; nip05?: string }> = {};
+        bundle.events.filter((e) => e.kind === 0).forEach((e) => {
+          try {
+            const c = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
+            profileUpdates[e.pubkey] = { name: c.name ?? c.display_name, about: c.about, picture: c.picture, banner: c.banner, nip05: c.nip05 };
+          } catch (_) {}
+        });
+        if (Object.keys(profileUpdates).length > 0) setProfiles((p) => ({ ...p, ...profileUpdates }));
+        setImportedEventIds((prev) => {
+          const next = new Set(prev);
+          bundle.events.forEach((e) => next.add(e.id));
+          if (next.size > 2000) return new Set([...next].slice(-2000));
+          return next;
+        });
+        setDecodeError("");
+        setStatus(`Loaded ${bundle.events.length} events from image.`);
+        logger.logAction("detect_completed", `Loaded ${bundle.events.length} events`, { name: file.name, eventCount: bundle.events.length });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setDecodeError(msg);
+        logger.logAction("detect_error", msg, { name: file.name });
+      } finally {
+        setDetecting(false);
+      }
       return;
     }
     let path: string | null;
+    const tauri = await getTauri();
     if (providedPath === undefined) {
       setDetecting(true);
       try {
-        path = await openDialog({
+        path = await tauri.openDialog({
           multiple: false,
           filters: [
             { name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"] },
@@ -870,7 +969,7 @@ function App({ profile }: { profile: string | null }) {
     setDetecting(true);
     logger.logAction("detect_started", "Decoding stego image", { path });
     try {
-      const result = await invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_image", { path });
+      const result = await tauri.invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_image", { path });
       if (!result.ok || !result.payload) {
         const err = result.error || "Decode failed";
         setDecodeError(err);
@@ -965,7 +1064,7 @@ function App({ profile }: { profile: string | null }) {
       logger.logAction("detect_completed", `Loaded ${bundle.events.length} events`, { path, eventCount: bundle.events.length });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const isTauriBridgeError = /undefined.*invoke|__TAURI_INTERNALS__/i.test(msg);
+      const isTauriBridgeError = /undefined.*invoke|__TAURI_INTERNALS__/i.test(String(msg));
       setDecodeError(
         isTauriBridgeError
           ? "Detect requires the Stegstr desktop app. Run: npm run tauri dev (not in a browser)"
@@ -978,13 +1077,14 @@ function App({ profile }: { profile: string | null }) {
   }, [effectivePrivKey, identities, viewingPubkeys]);
 
   useEffect(() => {
+    if (isWeb()) return;
     let unlisten: (() => void) | null = null;
-    getCurrentWindow()
-      .onDragDropEvent((event) => {
+    getTauri()
+      .then((t) => t.getCurrentWindow().onDragDropEvent((event) => {
         if (event.payload.type === "drop" && event.payload.paths?.length) {
           handleLoadFromImage(event.payload.paths[0]);
         }
-      })
+      }))
       .then((fn) => { unlisten = fn; })
       .catch(() => {});
     return () => { unlisten?.(); };
@@ -992,12 +1092,15 @@ function App({ profile }: { profile: string | null }) {
 
   const handleSaveToImage = useCallback(() => {
     setDecodeError("");
+    if (isWeb()) setEmbedCoverFile(null);
     setEmbedModalOpen(true);
   }, []);
 
   const handleDetectFromExchange = useCallback(async () => {
+    if (isWeb()) return;
     try {
-      const path = await invoke<string>("get_exchange_path");
+      const tauri = await getTauri();
+      const path = await tauri.invoke<string>("get_exchange_path");
       handleLoadFromImage(path);
     } catch (e) {
       setDecodeError(e instanceof Error ? e.message : String(e));
@@ -1005,12 +1108,13 @@ function App({ profile }: { profile: string | null }) {
   }, [handleLoadFromImage]);
 
   const handleEmbedToExchange = useCallback(async () => {
-    if (!profile) return;
+    if (isWeb() || !profile) return;
     setDecodeError("");
     setDetecting(true);
     logger.logAction("embed_started", "Embed to exchange (quick test)", { eventCount: events.length });
     try {
-      const coverPath = await openDialog({
+      const tauri = await getTauri();
+      const coverPath = await tauri.openDialog({
         multiple: false,
         filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"] }],
       });
@@ -1018,12 +1122,12 @@ function App({ profile }: { profile: string | null }) {
         setDetecting(false);
         return;
       }
-      const outputPath = await invoke<string>("get_exchange_path");
+      const outputPath = await tauri.invoke<string>("get_exchange_path");
       const bundle: NostrStateBundle = { version: STEGSTR_BUNDLE_VERSION, events };
       const jsonString = JSON.stringify(bundle);
       const encrypted = await stegoCrypto.encryptOpen(jsonString);
       const payloadToEmbed = "base64:" + uint8ArrayToBase64(encrypted);
-      const result = await invoke<{ ok: boolean; path?: string; error?: string }>("encode_stego_image", {
+      const result = await tauri.invoke<{ ok: boolean; path?: string; error?: string }>("encode_stego_image", {
         coverPath,
         outputPath,
         payload: payloadToEmbed,
@@ -1047,7 +1151,56 @@ function App({ profile }: { profile: string | null }) {
     setDecodeError("");
     logger.logAction("embed_started", "Starting embed flow", { eventCount: events.length });
     try {
-      const coverPath = await openDialog({
+      if (isWeb()) {
+        if (!embedCoverFile) {
+          setDecodeError("Choose a cover image first.");
+          return;
+        }
+        const pubkeysInEmbed = new Set(events.flatMap((e) => [e.pubkey, ...e.tags.filter((t) => t[0] === "p").map((t) => t[1])]));
+        const kind0InEvents = new Set(events.filter((e) => e.kind === 0).map((e) => e.pubkey));
+        const syntheticKind0: NostrEvent[] = [];
+        for (const pk of pubkeysInEmbed) {
+          if (!pk || kind0InEvents.has(pk)) continue;
+          const idForPk = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === pk);
+          if (!idForPk) continue;
+          const prof = profiles[pk];
+          if (!prof) continue;
+          try {
+            const content = JSON.stringify(prof);
+            const ev = await Nostr.finishEventAsync(
+              { kind: 0, content, tags: [], created_at: Math.floor(Date.now() / 1000) },
+              Nostr.hexToBytes(idForPk.privKeyHex)
+            );
+            syntheticKind0.push(ev as NostrEvent);
+          } catch (_) {}
+        }
+        const bundle: NostrStateBundle = { version: STEGSTR_BUNDLE_VERSION, events: [...syntheticKind0, ...events] };
+        const jsonString = JSON.stringify(bundle);
+        let payloadToEmbed: string;
+        if (embedMode === "open") {
+          const encrypted = await stegoCrypto.encryptOpen(jsonString);
+          payloadToEmbed = "base64:" + uint8ArrayToBase64(encrypted);
+        } else {
+          const recipients = Array.from(embedSelectedPubkeys);
+          if (pubkey && !recipients.includes(pubkey)) recipients.push(pubkey);
+          if (recipients.length === 0) {
+            setDecodeError("Select at least one recipient or use \"Any Stegstr user\"");
+            return;
+          }
+          const encrypted = await stegoCrypto.encryptForRecipients(jsonString, effectivePrivKey, recipients);
+          payloadToEmbed = "base64:" + uint8ArrayToBase64(encrypted);
+        }
+        const blob = await encodeStegoToBlob(embedCoverFile, payloadToEmbed);
+        const name = embedCoverFile.name.replace(/\.[^.]+$/, "") || "image";
+        downloadBlob(blob, `${name}-stegstr.png`);
+        setEmbedModalOpen(false);
+        setEmbedCoverFile(null);
+        setStatus("Image downloaded. Save it from your Downloads folder.");
+        logger.logAction("embed_completed", "Embed saved (browser download)", { eventCount: events.length });
+        return;
+      }
+      const tauri = await getTauri();
+      const coverPath = await tauri.openDialog({
         multiple: false,
         filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"] }],
       });
@@ -1058,10 +1211,10 @@ function App({ profile }: { profile: string | null }) {
       const coverName = coverPath.replace(/^.*[/\\]/, "").replace(/\.[^.]+$/, "") || "image";
       let defaultPath = `${coverName}.png`;
       try {
-        const desktop = await invoke<string>("get_desktop_path");
+        const desktop = await tauri.invoke<string>("get_desktop_path");
         if (desktop) defaultPath = `${desktop}/${coverName}.png`;
       } catch (_) {}
-      const outputPath = await saveDialog({
+      const outputPath = await tauri.saveDialog({
         filters: [{ name: "PNG", extensions: ["png"] }],
         defaultPath,
       });
@@ -1104,7 +1257,7 @@ function App({ profile }: { profile: string | null }) {
         const encrypted = await stegoCrypto.encryptForRecipients(jsonString, effectivePrivKey, recipients);
         payloadToEmbed = "base64:" + uint8ArrayToBase64(encrypted);
       }
-      const result = await invoke<{ ok: boolean; path?: string; error?: string }>("encode_stego_image", {
+      const result = await tauri.invoke<{ ok: boolean; path?: string; error?: string }>("encode_stego_image", {
         coverPath,
         outputPath: finalOutputPath,
         payload: payloadToEmbed,
@@ -1114,7 +1267,7 @@ function App({ profile }: { profile: string | null }) {
         setStatus(`Saved to ${result.path}. Finder opened.`);
         logger.logAction("embed_completed", "Embed saved successfully", { path: result.path, eventCount: events.length });
         try {
-          await invoke("reveal_in_finder", { path: result.path });
+          await tauri.invoke("reveal_in_finder", { path: result.path });
         } catch (_) {}
       } else {
         const err = result.error || "Encode failed";
@@ -1127,7 +1280,7 @@ function App({ profile }: { profile: string | null }) {
       logger.logError("Embed failed", e, {});
       setEmbedModalOpen(false);
     }
-  }, [embedModalOpen, embedMode, embedSelectedPubkeys, events, pubkey, effectivePrivKey, profiles, identities]);
+  }, [embedModalOpen, embedMode, embedSelectedPubkeys, embedCoverFile, events, pubkey, effectivePrivKey, profiles, identities]);
 
   const toggleEmbedRecipient = useCallback((pk: string) => {
     setEmbedSelectedPubkeys((prev) => {
@@ -2650,7 +2803,7 @@ function App({ profile }: { profile: string | null }) {
             <div className="stego-actions">
               <button type="button" className="btn-stego" onClick={() => handleLoadFromImage()} disabled={detecting}>Detect image</button>
               <button type="button" className="btn-stego btn-primary" onClick={handleSaveToImage} disabled={detecting}>Embed image</button>
-              {profile != null && (
+              {profile != null && !isWeb() && (
                 <>
                   <button type="button" className="btn-stego btn-quick-test" onClick={handleDetectFromExchange} disabled={detecting} title="1-click: detect from /tmp/stegstr-test-exchange/exchange.png">Detect from exchange</button>
                   <button type="button" className="btn-stego btn-quick-test" onClick={handleEmbedToExchange} disabled={detecting} title="2-click: pick cover → save to exchange path">Embed to exchange</button>
@@ -2749,6 +2902,21 @@ function App({ profile }: { profile: string | null }) {
           <div className="modal embed-modal" onClick={(e) => e.stopPropagation()}>
             <h3>Embed feed into image</h3>
             <p className="muted">Data is encrypted so only Stegstr can read it. Choose who can view:</p>
+            {isWeb() && (
+              <div className="embed-cover-web">
+                <p className="muted">Cover image (browser):</p>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={async () => {
+                    const file = await pickImageFile();
+                    if (file) setEmbedCoverFile(file);
+                  }}
+                >
+                  {embedCoverFile ? embedCoverFile.name : "Choose cover image"}
+                </button>
+              </div>
+            )}
             <div className="embed-options">
               <label className="embed-option">
                 <input
@@ -2794,7 +2962,7 @@ function App({ profile }: { profile: string | null }) {
             )}
             <div className="row modal-actions">
               <button type="button" onClick={() => setEmbedModalOpen(false)}>Cancel</button>
-              <button type="button" onClick={handleEmbedConfirm} className="btn-primary">Embed</button>
+              <button type="button" onClick={handleEmbedConfirm} className="btn-primary" disabled={isWeb() && !embedCoverFile}>Embed</button>
             </div>
           </div>
         </div>
@@ -2851,7 +3019,12 @@ function AppBootstrap() {
       setProfile(sync);
       return;
     }
-    invoke<string | null>("get_test_profile")
+    if (isWeb()) {
+      setProfile(null);
+      return;
+    }
+    getTauri()
+      .then((t) => t.invoke<string | null>("get_test_profile"))
       .then((p) => setProfile(p ?? null))
       .catch(() => setProfile(null));
   }, []);

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:web": "tsc && vite build --base /app/",
     "preview": "vite preview",
     "tauri": "tauri",
     "build:mac": "tauri build",

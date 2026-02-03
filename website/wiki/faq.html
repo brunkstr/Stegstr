@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FAQ - Stegstr Wiki</title>
+  <meta name="description" content="Frequently asked questions about Stegstr: privacy, security, compatibility, and more.">
+  <link rel="stylesheet" href="../css/style.css">
+  <link rel="icon" type="image/png" href="../images/logo-square.png">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav-inner">
+      <a href="../index.html" class="logo-link">
+        <img src="../images/logo.png" alt="Stegstr" height="40">
+        <span>Stegstr</span>
+      </a>
+      <div class="nav-links">
+        <a href="../downloads.html">Downloads</a>
+        <a href="../getting-started.html">Get Started</a>
+        <a href="index.html">Wiki</a>
+        <a href="https://github.com/brunkstr/Stegstr" target="_blank" rel="noopener noreferrer">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <div class="wiki-layout">
+    <aside class="wiki-nav">
+      <ul>
+        <li><a href="index.html">Wiki Home</a></li>
+        <li><a href="how-it-works.html">How It Works</a></li>
+        <li><a href="nostr.html">Nostr Integration</a></li>
+        <li><a href="cli.html">CLI</a></li>
+        <li><a href="faq.html" class="active">FAQ</a></li>
+        <li><a href="for-agents.html">For AI Agents</a></li>
+      </ul>
+    </aside>
+    <main class="wiki-content page-content">
+      <h1>FAQ</h1>
+
+      <h2>Privacy & Security</h2>
+
+      <h3>Does the recipient need to log into Nostr?</h3>
+      <p>For <strong>posts</strong> (kind 1): No. They can use Detect on the image without logging in. For <strong>DMs</strong> (kind 4): Yes. DMs are NIP-04 encrypted; only the account you sent the message to can decrypt the content.</p>
+
+      <h3>Do I need the network to receive content from an image?</h3>
+      <p>No. Detect works entirely offline. The data comes from the image, not from Nostr relays.</p>
+
+      <h3>Is my data stored on a server?</h3>
+      <p>When you use local/offline mode, everything stays on your device. Relay sync is optional and only happens when you turn Network ON. The anonymous key (if you don't log in) is stored only locally.</p>
+
+      <h3>Who can decrypt an embedded image?</h3>
+      <ul>
+        <li><strong>Open mode (any Stegstr user):</strong> Anyone with Stegstr can Detect and decrypt. The app uses a fixed derived key.</li>
+        <li><strong>Recipients mode:</strong> Only the listed pubkeys (and the sender) can decrypt. You must include your own pubkey if you want to open it later.</li>
+      </ul>
+
+      <h3>What if I'm not in the recipients list?</h3>
+      <p>You'll get an error: "You are not a recipient of this stego image." Only people whose pubkeys were added when the sender chose recipients-mode can decrypt.</p>
+
+      <h2>Compatibility</h2>
+
+      <h3>What image formats are supported?</h3>
+      <p>Stegstr embeds only in <strong>PNG</strong>. The DWT-based steganography requires lossless data. JPEG and other lossy formats will corrupt the hidden payload. Avoid re-compressing or editing the image after embedding.</p>
+
+      <h3>Can I use Stegstr images with other Nostr clients?</h3>
+      <p>The stego format (DWT, magic, encryption) is Stegstr-specific. Other clients would need to implement the same decode logic. The events inside are standard Nostr events, so once extracted, they're compatible with any Nostr client.</p>
+
+      <h3>Does it work on mobile?</h3>
+      <p>Yes. The Android app in <code>mobile-android/</code> supports full Detect and Embed flows, including recipients-mode encryption. iOS is not yet supported.</p>
+
+      <h3>Can I crop or resize an embedded image?</h3>
+      <p>Stegstr uses tile-based redundancy: the payload is repeated in 256×256 tiles. A cropped image may still decode if a full tile remains. Heavy cropping, resizing, or re-encoding can corrupt the data.</p>
+
+      <h2>Technical</h2>
+
+      <h3>How much data can I hide in an image?</h3>
+      <p>Capacity depends on image size. With DWT (3 bits per 2×2 block per channel), a 256×256 tile holds ~6 KB. A 1000×1000 image has multiple tiles; total capacity is roughly <code>(w/2)×(h/2)×3</code> bits. Encryption and JSON add overhead.</p>
+
+      <h3>What is DWT vs LSB?</h3>
+      <p>Stegstr uses <strong>DWT (Haar 2D)</strong> steganography, not raw pixel LSB. Data is embedded in the LSB of wavelet coefficients (LH sub-band), which tends to be more robust and less visible. See <a href="how-it-works.html">How It Works</a>.</p>
+
+      <h3>Can images be detected as containing stego data?</h3>
+      <p>DWT-based embedding can potentially be detected by statistical analysis. For casual use, the modifications are visually imperceptible. For high-security scenarios, consider the threat model and that the image format (PNG, size) may signal that stego is possible.</p>
+
+      <h3>Why does the app need even-dimension images?</h3>
+      <p>The Haar 2×2 wavelet requires even width and height. Stegstr automatically crops by one pixel if needed before encode/decode.</p>
+
+      <h2>Usage</h2>
+
+      <h3>Can I embed for both "any user" and "specific recipients"?</h3>
+      <p>You choose one mode per embed: either open (any Stegstr user) or recipients (specific pubkeys). You cannot combine both in a single image.</p>
+
+      <h3>What happens to my local posts when I log in?</h3>
+      <p>When you first turn Network ON after logging in, they are re-signed with your Nostr key and published to relays once. They then appear on Nostr. Local-only content before that stays in the app until you sync.</p>
+
+      <h3>How do I add recipients when embedding?</h3>
+      <p>In the Embed flow, select "Only these people" (or equivalent) and add Nostr pubkeys (npub or hex). Include your own pubkey if you want to open the image later on another device.</p>
+
+      <h2>Getting Help</h2>
+      <p>See the <a href="https://github.com/brunkstr/Stegstr" target="_blank" rel="noopener noreferrer">GitHub repository</a> for issues, source code, and build instructions. Check <a href="how-it-works.html">How It Works</a> and <a href="nostr.html">Nostr Integration</a> for technical details.</p>
+    </main>
+  </div>
+
+  <footer class="site-footer">
+    <p>Stegstr — Steganographic Social Networking. <a href="https://github.com/brunkstr/Stegstr" target="_blank" rel="noopener noreferrer">GitHub</a> · <a href="index.html">Wiki</a> · MIT License</p>
+  </footer>
+
+  <script src="../js/main.js"></script>
+</body>
+</html>

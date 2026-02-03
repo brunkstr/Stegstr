@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+# AI agents: see /agents.txt for capabilities and programmatic access.

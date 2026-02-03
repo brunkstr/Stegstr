@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Downloads - Stegstr</title>
+  <meta name="description" content="Download Stegstr for macOS, Windows, Linux, and Android. Open-source steganographic Nostr client.">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" type="image/png" href="images/logo-square.png">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav-inner">
+      <a href="index.html" class="logo-link">
+        <img src="images/logo.png" alt="Stegstr" height="40">
+        <span>Stegstr</span>
+      </a>
+      <div class="nav-links">
+        <a href="downloads.html">Downloads</a>
+        <a href="getting-started.html">Get Started</a>
+        <a href="wiki/index.html">Wiki</a>
+        <a href="https://github.com/brunkstr/Stegstr" target="_blank" rel="noopener noreferrer">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main class="page-content">
+    <h1>Downloads</h1>
+    <p>Stegstr has two interfaces: the <strong>graphical app (UI)</strong> and the <strong>command-line tool (CLI)</strong>. Below are downloads for both.</p>
+
+    <h2>Graphical app (UI)</h2>
+    <p><strong>Browser:</strong> Use the app at <a href="app/">stegstr.com/app</a>. No install—runs in the browser. When Network is off, it is 100% local (no internet, no cookies, no caching).</p>
+    <p>Desktop/mobile releases are on <a href="https://github.com/brunkstr/Stegstr/releases" target="_blank" rel="noopener noreferrer">GitHub Releases</a>.</p>
+
+    <h2 id="macos">macOS</h2>
+    <ul>
+      <li><a href="https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-macOS.dmg">.dmg</a> — Disk image (one-click download)</li>
+      <li><a href="https://github.com/brunkstr/Stegstr/releases">All builds</a> — See GitHub Releases for .app and other formats</li>
+    </ul>
+    <p><strong>First time opening?</strong> macOS may show a security message (the app is not Apple-signed). Do this <strong>once</strong> — then you can open Stegstr normally:</p>
+    <ol>
+      <li>Open the .dmg and drag Stegstr to Applications.</li>
+      <li><strong>Right-click</strong> (or Control-click) Stegstr → <strong>Open</strong> → click <strong>Open</strong> in the dialog. One dialog, then you&rsquo;re done.</li>
+    </ol>
+    <p>If you already double-clicked and see &ldquo;Apple could not verify…&rdquo;, go to <strong>System Settings → Privacy &amp; Security</strong> and click <strong>Open Anyway</strong> next to Stegstr, then open the app again.</p>
+    <p class="muted" style="margin-top:0.5rem; font-size:0.9rem;">Optional: after the first successful open, you can remove the quarantine flag so macOS doesn&rsquo;t re-prompt if you move the app. In Terminal: <code>xattr -cr /Applications/Stegstr.app</code></p>
+
+    <h2 id="windows">Windows</h2>
+    <ul>
+      <li><a href="https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-Windows.exe">.exe</a> — Executable installer (one-click download)</li>
+      <li><a href="https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-Windows.msi">.msi</a> — MSI installer</li>
+      <li><a href="https://github.com/brunkstr/Stegstr/releases">All builds</a> — See GitHub Releases</li>
+    </ul>
+
+    <h2 id="linux">Linux</h2>
+    <ul>
+      <li><a href="https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-Linux.deb">.deb</a> — Debian/Ubuntu (one-click download)</li>
+      <li><a href="https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-Linux.AppImage">.AppImage</a> — Portable (most distros)</li>
+      <li><a href="https://github.com/brunkstr/Stegstr/releases">All builds</a> — See GitHub Releases</li>
+    </ul>
+    <h2 id="android">Android</h2>
+    <ul>
+      <li>APK built from the <code>mobile-android/</code> directory. See the <a href="https://github.com/brunkstr/Stegstr/tree/main/mobile-android" target="_blank" rel="noopener noreferrer">README</a> for build instructions. Requires JVM 17+.</li>
+    </ul>
+
+    <h2>Build from Source</h2>
+    <p>Prerequisites: Node.js 18+, Rust (latest stable).</p>
+    <ul>
+      <li><strong>macOS:</strong> Xcode Command Line Tools</li>
+      <li><strong>Windows:</strong> Visual Studio Build Tools with C++ workload</li>
+      <li><strong>Linux:</strong> <code>libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev libayatana-appindicator3-dev</code></li>
+    </ul>
+    <pre><code>git clone https://github.com/brunkstr/Stegstr.git
+cd stegstr
+npm install
+npm run build:mac   # or build:win, build:linux</code></pre>
+    <p>See <a href="https://github.com/brunkstr/Stegstr">GitHub</a> for full build documentation.</p>
+
+    <h2 id="cli">Command-line interface (CLI)</h2>
+    <p>Stegstr includes a headless CLI (<code>stegstr-cli</code>) for decode, detect, embed, and post from the terminal or scripts. Run these in your terminal to download the module and build the CLI. You need <a href="https://rustup.rs" target="_blank" rel="noopener noreferrer">Rust</a> (latest stable). Click a command to copy, then paste in your terminal.</p>
+    <p><strong>1. Clone the repo and enter it</strong></p>
+    <div class="copyable-cmd">
+      <pre><code>git clone https://github.com/brunkstr/Stegstr.git
+cd Stegstr</code></pre>
+      <button type="button" class="copy-cmd-btn" data-copy="git clone https://github.com/brunkstr/Stegstr.git&#10;cd Stegstr" aria-label="Copy command">Copy</button>
+    </div>
+    <p><strong>2. Build the CLI</strong></p>
+    <div class="copyable-cmd">
+      <pre><code>cd src-tauri && cargo build --release --bin stegstr-cli</code></pre>
+      <button type="button" class="copy-cmd-btn" data-copy="cd src-tauri && cargo build --release --bin stegstr-cli" aria-label="Copy command">Copy</button>
+    </div>
+    <p>Binary: <code>target/release/stegstr-cli</code> (Windows: <code>stegstr-cli.exe</code>). Full instructions and all commands: <a href="wiki/cli.html">CLI documentation</a>. For AI agents: <a href="wiki/for-agents.html">For AI Agents</a> and <a href="agents.txt">agents.txt</a>.</p>
+
+    <h2>Verification</h2>
+    <p>Verify your download by checking the build artifacts and release signatures on GitHub. The project uses GitHub Actions for reproducible builds.</p>
+  </main>
+
+  <footer class="site-footer">
+    <p>Stegstr — Steganographic Social Networking. <a href="https://github.com/brunkstr/Stegstr">GitHub</a> · <a href="wiki/index.html">Wiki</a> · MIT License</p>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

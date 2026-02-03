@@ -60,8 +60,9 @@ function flush(ent: LogEntry): void {
   const line = JSON.stringify(ent);
   console.log(`[Stegstr] ${line}`);
   try {
-    import("@tauri-apps/api/core").then(({ invoke }) =>
-      invoke("stegstr_log", {
+    if (typeof window !== "undefined" && (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+      import("@tauri-apps/api/core").then(({ invoke }) =>
+        invoke("stegstr_log", {
         level: ent.level,
         action: ent.action ?? "other",
         message: ent.message,
@@ -70,6 +71,7 @@ function flush(ent: LogEntry): void {
         stack: ent.stack ?? null,
       }).catch(() => {})
     ).catch(() => {});
+    }
   } catch (_) {}
 }
 
