@@ -57,8 +57,16 @@ button:active { background-color: #eee; }
 .header-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 
 /* Network toggle */
-.network-toggle-wrap { display: flex; align-items: center; gap: 0.5rem; }
+.network-toggle-wrap { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .network-label { font-size: 0.9rem; font-weight: 500; }
+.network-off-notice {
+  flex-basis: 100%;
+  font-size: 0.75rem;
+  color: #555;
+  margin-top: 0.35rem;
+  margin-left: 0;
+  line-height: 1.35;
+}
 .network-toggle {
   display: inline-flex;
   align-items: center;
@@ -522,6 +530,7 @@ textarea { resize: vertical; min-height: 60px; }
   .muted, .profile-note, .profile-about, .relay-status, .note-time, .event-meta, .msg-meta { color: #b0b0b0; }
   .note-avatar { color: #b0b0b0; }
   .network-toggle .toggle-state.off, .network-status { color: #b0b0b0; }
+  .network-off-notice { color: #a0a0a0; }
   .note-replies { border-color: #444; }
   /* Identity: readable text and no blue */
   .identity-view-desc, .identity-card-name { color: #eee; }

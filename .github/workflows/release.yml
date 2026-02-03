@@ -53,6 +53,24 @@ jobs:
           workspaces: "src-tauri -> target"
           cache-on-failure: true
 
+      - name: Import Apple certificate (macOS, optional)
+        if: matrix.platform == 'macos-latest' && secrets.APPLE_SIGNING_ENABLED == 'true'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY" >> $GITHUB_ENV
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -67,14 +85,31 @@ jobs:
             npm run tauri build -- ${{ matrix.args }}
           fi
 
+      - name: Notarize app (macOS, optional)
+        if: matrix.platform == 'macos-latest' && secrets.APPLE_SIGNING_ENABLED == 'true'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Stegstr.app"
+          xcrun notarytool store-credentials "notarytool-profile" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD"
+          ditto -c -k --keepParent "$APP_PATH" notarization.zip
+          xcrun notarytool submit notarization.zip --keychain-profile "notarytool-profile" --wait
+          xcrun stapler staple "$APP_PATH"
+
       - name: Create DMG from app (macOS only)
         if: matrix.platform == 'macos-latest'
         shell: bash
         run: |
           APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Stegstr.app"
           DMG_DIR="src-tauri/target/universal-apple-darwin/release/bundle/dmg"
-          mkdir -p "$DMG_DIR"
-          hdiutil create -volname "Stegstr" -srcfolder "$APP_PATH" -ov -format UDZO -imagekey zlib-level=9 "$DMG_DIR/Stegstr-macOS.dmg"
+          STAGING="src-tauri/target/universal-apple-darwin/release/bundle/dmg-staging"
+          mkdir -p "$STAGING" "$DMG_DIR"
+          cp -R "$APP_PATH" "$STAGING/"
+          cp .github/First-time-opening-macos.txt "$STAGING/First time opening.txt"
+          hdiutil create -volname "Stegstr" -srcfolder "$STAGING" -ov -format UDZO -imagekey zlib-level=9 "$DMG_DIR/Stegstr-macOS.dmg"
 
       - name: Set bundle path
         id: bundle
@@ -135,8 +170,8 @@ jobs:
           tag_name: v${{ steps.version.outputs.VERSION }}-${{ github.run_number }}
           name: Stegstr v${{ steps.version.outputs.VERSION }} (build ${{ github.run_number }})
           body: |
-            Download Stegstr for your platform. One click — no extra steps.
-            - **macOS**: Stegstr-macOS.dmg
+            Download Stegstr for your platform.
+            - **macOS**: Stegstr-macOS.dmg — first time? Right-click the app → Open → click Open (one dialog). Or see "First time opening.txt" in the DMG.
             - **Windows**: Stegstr-Windows.exe or Stegstr-Windows.msi
             - **Linux**: Stegstr-Linux.deb or Stegstr-Linux.AppImage
           draft: false

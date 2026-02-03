@@ -1711,7 +1711,7 @@ function App({ profile }: { profile: string | null }) {
     <main className="app-root primal-layout">
       <header className="top-header">
         <h1 className="app-title">
-          <img src="/LOGO.png" alt="" className="app-logo" />
+          <img src={`${import.meta.env.BASE_URL}LOGO.png`} alt="" className="app-logo" />
           Stegstr
         </h1>
         <div className="header-actions">
@@ -1729,6 +1729,11 @@ function App({ profile }: { profile: string | null }) {
               <span className="toggle-state on">ON</span>
             </button>
             <span className="network-status">{networkEnabled ? "ON" : "OFF"}</span>
+            {!networkEnabled && (
+              <span className="network-off-notice" title="When Network is OFF, no data is sent over the internet. Detect and Embed run entirely in your browser.">
+                No internet — local only. Detect &amp; Embed stay in your browser; nothing is sent.
+              </span>
+            )}
           </div>
           {actingIdentity && (
             <span className="acting-identity" title={`Acting as ${profiles[actingPubkey ?? ""]?.name || actingIdentity.label} (${(actingIdentity.category ?? (actingIdentity.type === "nostr" ? "nostr" : "local")) === "nostr" ? "Nostr" : "Local"})`}>
