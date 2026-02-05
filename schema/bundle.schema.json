@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brunkstr/Stegstr/schema/bundle.schema.json",
+  "title": "Stegstr bundle",
+  "description": "Decrypted payload embedded in a Stegstr PNG. Raw layer: magic STEGSTR (7 bytes) + 4-byte big-endian length + this JSON (or encrypted bytes).",
+  "type": "object",
+  "required": ["version", "events"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Bundle format version"
+    },
+    "events": {
+      "type": "array",
+      "description": "Nostr-style events: kind 1 (notes), kind 4 (DMs), kind 0 (profiles), etc.",
+      "items": {
+        "type": "object",
+        "required": ["id", "pubkey", "created_at", "kind", "tags", "content", "sig"],
+        "properties": {
+          "id": { "type": "string", "description": "32-byte hex event ID" },
+          "pubkey": { "type": "string", "description": "32-byte hex public key" },
+          "created_at": { "type": "integer", "description": "Unix timestamp" },
+          "kind": { "type": "integer", "description": "NIP kind (e.g. 0 profile, 1 note, 4 DM)" },
+          "tags": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } },
+          "content": { "type": "string" },
+          "sig": { "type": "string", "description": "64-byte hex signature" }
+        }
+      }
+    }
+  }
+}

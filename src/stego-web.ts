@@ -4,6 +4,9 @@
  * Embeds in LSB of LH coefficients. Tile-based (256x256) for crop survival.
  */
 
+import { decodePngToRGBA } from "./png-decode";
+import { encodeRGBAtoPNG } from "./png-encode";
+
 const MAGIC = new Uint8Array([0x53, 0x54, 0x45, 0x47, 0x53, 0x54, 0x52]); // "STEGSTR"
 const MAGIC_LEN = 7;
 const LENGTH_BYTES = 4;
@@ -137,12 +140,16 @@ function decodeFromTile(
     for (let blockIdx = 0; blockIdx < blocksPerChannel; blockIdx++)
       bits.push((lh[blockIdx]! & 1) !== 0);
   }
+  // Debug: show first 88 bits as bytes (should be STEGSTR + 4-byte length)
+  const first11Bytes = bitsToBytes(bits.slice(0, 88));
+  console.log("[stego-web] decodeFromTile: dims=", tw, "x", th, "first 11 bytes:", Array.from(first11Bytes), "as string:", String.fromCharCode(...first11Bytes.slice(0, 7)));
   for (let start = 0; start <= bits.length - 88; start++) {
     const slice = bits.slice(start, start + MAGIC_LEN * 8);
     const bytes = bitsToBytes(slice);
     let match = true;
     for (let i = 0; i < MAGIC_LEN; i++) if (bytes[i] !== MAGIC[i]) { match = false; break; }
     if (!match) continue;
+    console.log("[stego-web] decodeFromTile: MAGIC FOUND at offset", start);
     const lenSlice = bits.slice(
       start + MAGIC_LEN * 8,
       start + (MAGIC_LEN + LENGTH_BYTES) * 8
@@ -183,14 +190,16 @@ export function decodeStegoFromRGBA(
   width: number,
   height: number
 ): Uint8Array | null {
+  console.log("[stego-web] decodeStegoFromRGBA: input dims=", width, "x", height, "dataLen=", data.length);
   const { data: buf, w, h } = ensureEvenDimensions(data, width, height);
+  console.log("[stego-web] decodeStegoFromRGBA: even dims=", w, "x", h);
   if (w < 2 || h < 2) return null;
   const stride = w * 4;
 
-  let payload = decodeFromTile(buf, w, h, stride);
-  if (payload) return payload;
-
+  // CRITICAL FIX: Try tiles FIRST if image is large enough.
+  // This matches the embed logic which embeds into 256x256 tiles for large images.
   if (w >= TILE_SIZE && h >= TILE_SIZE) {
+    console.log("[stego-web] decodeStegoFromRGBA: trying tile-based decode first");
     for (let oy = 0; oy <= h - TILE_SIZE; oy += DECODE_STEP) {
       for (let ox = 0; ox <= w - TILE_SIZE; ox += DECODE_STEP) {
         const tw = Math.min(TILE_SIZE, w - ox);
@@ -204,30 +213,44 @@ export function decodeStegoFromRGBA(
           const row = buf.subarray(srcStart, srcStart + twEven * 4);
           tile.set(row, y * twEven * 4);
         }
-        payload = decodeFromTile(tile, twEven, thEven, twEven * 4);
-        if (payload) return payload;
+        const payload = decodeFromTile(tile, twEven, thEven, twEven * 4);
+        if (payload) {
+          console.log("[stego-web] decodeStegoFromRGBA: found payload in tile at", ox, oy, "len=", payload.length);
+          return payload;
+        }
       }
     }
   }
+
+  // Fallback: try full image (for small images that don't use tiles)
+  console.log("[stego-web] decodeStegoFromRGBA: trying full image decode");
+  const payload = decodeFromTile(buf, w, h, stride);
+  if (payload) {
+    console.log("[stego-web] decodeStegoFromRGBA: found payload in full image, len=", payload.length, "first 20:", Array.from(payload.slice(0, 20)));
+    return payload;
+  }
+  
   return null;
 }
 
 /**
  * Encode payload into a copy of the RGBA buffer. Modifies the copy in place; returns it.
  * Caller can then draw to canvas and export as PNG.
+ * Returns { data, width, height } with possibly cropped even dimensions.
  */
 export function encodeStegoIntoRGBA(
   data: Uint8ClampedArray,
   width: number,
   height: number,
   payload: Uint8Array
-): Uint8ClampedArray {
+): { data: Uint8ClampedArray; width: number; height: number } {
   const { data: buf, w, h } = ensureEvenDimensions(data, width, height);
   if (w < 2 || h < 2) throw new Error("Image too small");
   const raw = buf.slice(0);
   const stride = w * 4;
   const toEmbed = buildToEmbed(payload);
   const bitsNeeded = toEmbed.length * 8;
+  console.log("[stego-web] Embed: dims=", w, "x", h, "payload=", payload.length, "bytes, toEmbed=", toEmbed.length, "bytes, first 20:", Array.from(toEmbed.slice(0, 20)));
 
   let embeddedAny = false;
   for (let ty = 0; ty < h; ty += TILE_SIZE) {
@@ -263,7 +286,24 @@ export function encodeStegoIntoRGBA(
       );
     embedInTile(raw, w, h, toEmbed, stride);
   }
-  return raw;
+
+  // CRITICAL: Immediate round-trip test to verify DWT embed/decode works
+  const testDecode = decodeStegoFromRGBA(raw, w, h);
+  if (!testDecode) {
+    console.error("[stego-web] CRITICAL BUG: Embed succeeded but immediate decode failed! DWT is broken.");
+  } else {
+    console.log("[stego-web] Immediate decode OK, len:", testDecode.length, "first 16:", Array.from(testDecode.slice(0, 16)));
+    console.log("[stego-web] First 8 as string:", String.fromCharCode(...testDecode.slice(0, 8)));
+    // Verify the payload matches what we embedded
+    const payloadMatch = payload.length === testDecode.length && payload.every((b, i) => b === testDecode[i]);
+    console.log("[stego-web] Payload match:", payloadMatch ? "SUCCESS" : "FAIL");
+    if (!payloadMatch && testDecode.length > 0) {
+      console.log("[stego-web] Expected first 16:", Array.from(payload.slice(0, 16)));
+      console.log("[stego-web] Got first 16:", Array.from(testDecode.slice(0, 16)));
+    }
+  }
+
+  return { data: raw, width: w, height: h };
 }
 
 /** Load image file to ImageData (RGBA). */
@@ -287,36 +327,134 @@ export async function fileToImageData(file: File): Promise<{ data: ImageData; wi
   }
 }
 
-/** Encode image file with payload; return PNG blob. */
+/** Encode image file with payload; return PNG blob with exact pixel values. */
 export async function encodeImageFile(
   coverFile: File,
   payload: Uint8Array
 ): Promise<Blob> {
   const { data, width, height } = await fileToImageData(coverFile);
-  const outRGBA = encodeStegoIntoRGBA(data.data, width, height, payload);
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas 2d not available");
-  const outImageData = new ImageData(outRGBA, width, height);
-  ctx.putImageData(outImageData, 0, 0);
-  return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error("toBlob failed"))),
-      "image/png"
-    );
-  });
+  console.log("[stego-web] encodeImageFile: cover dims=", width, "x", height);
+  const result = encodeStegoIntoRGBA(data.data, width, height, payload);
+  console.log("[stego-web] encodeImageFile: output dims=", result.width, "x", result.height);
+  // Use raw PNG encoder to preserve exact pixel values (DWT steganography)
+  const pngBytes = encodeRGBAtoPNG(result.data, result.width, result.height);
+  console.log("[stego-web] encodeImageFile: PNG bytes=", pngBytes.length);
+
+  // CRITICAL: Test PNG round-trip to verify encoder/decoder preserve pixels
+  const pngDecoded = decodePngToRGBA(pngBytes.buffer);
+  console.log("[stego-web] PNG round-trip: decoded dims=", pngDecoded.width, "x", pngDecoded.height);
+  let pixelDiffs = 0;
+  for (let i = 0; i < result.data.length && i < pngDecoded.data.length; i++) {
+    if (result.data[i] !== pngDecoded.data[i]) pixelDiffs++;
+  }
+  console.log("[stego-web] PNG round-trip: pixel differences=", pixelDiffs, "/", result.data.length);
+  if (pixelDiffs > 0) {
+    console.error("[stego-web] CRITICAL BUG: PNG encoder/decoder is corrupting pixels!");
+  }
+
+  // Test stego decode from PNG-decoded data
+  const pngStegoTest = decodeStegoFromRGBA(pngDecoded.data, pngDecoded.width, pngDecoded.height);
+  if (!pngStegoTest) {
+    console.error("[stego-web] CRITICAL BUG: Stego decode failed after PNG round-trip!");
+  } else {
+    const pngPayloadMatch = payload.length === pngStegoTest.length && payload.every((b, i) => b === pngStegoTest[i]);
+    console.log("[stego-web] PNG stego test: payload match=", pngPayloadMatch ? "SUCCESS" : "FAIL");
+    if (!pngPayloadMatch) {
+      console.log("[stego-web] PNG stego: expected first 16:", Array.from(payload.slice(0, 16)));
+      console.log("[stego-web] PNG stego: got first 16:", Array.from(pngStegoTest.slice(0, 16)));
+    }
+  }
+
+  return new Blob([pngBytes], { type: "image/png" });
+}
+
+/**
+ * Test the full encode/decode round-trip to verify PNG encoder/decoder preserve exact pixels.
+ * Call this from browser console: import('./stego-web').then(m => m.testRoundTrip())
+ */
+export async function testRoundTrip(): Promise<void> {
+  console.log("=== STEGO ROUND-TRIP TEST ===");
+  
+  // Create a small test image (100x100 solid color with some variation)
+  const w = 100, h = 100;
+  const testData = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    testData[i * 4 + 0] = (i * 17) & 0xff;     // R
+    testData[i * 4 + 1] = (i * 31) & 0xff;     // G
+    testData[i * 4 + 2] = (i * 47) & 0xff;     // B
+    testData[i * 4 + 3] = 255;                  // A
+  }
+  
+  // Test payload
+  const testPayload = new TextEncoder().encode('{"test":"hello world from stegstr"}');
+  console.log("Test payload:", testPayload.length, "bytes:", new TextDecoder().decode(testPayload));
+  
+  // Encode
+  const encoded = encodeStegoIntoRGBA(testData, w, h, testPayload);
+  console.log("Encoded dims:", encoded.width, "x", encoded.height, "dataLen:", encoded.data.length);
+  
+  // PNG round-trip
+  const pngBytes = encodeRGBAtoPNG(encoded.data, encoded.width, encoded.height);
+  console.log("PNG encoded:", pngBytes.length, "bytes");
+  
+  // Decode PNG (use the static import)
+  const decoded = decodePngToRGBA(pngBytes.buffer);
+  console.log("PNG decoded dims:", decoded.width, "x", decoded.height, "dataLen:", decoded.data.length);
+  
+  // Compare pixel data
+  let diffs = 0;
+  for (let i = 0; i < encoded.data.length && i < decoded.data.length; i++) {
+    if (encoded.data[i] !== decoded.data[i]) {
+      if (diffs < 10) console.log("Pixel diff at", i, ":", encoded.data[i], "vs", decoded.data[i]);
+      diffs++;
+    }
+  }
+  console.log("Total pixel differences:", diffs, "/", encoded.data.length);
+  
+  // Decode stego
+  const stegoPayload = decodeStegoFromRGBA(decoded.data, decoded.width, decoded.height);
+  if (!stegoPayload) {
+    console.error("FAIL: Could not decode stego payload!");
+    return;
+  }
+  console.log("Decoded stego payload:", stegoPayload.length, "bytes:", new TextDecoder().decode(stegoPayload));
+  
+  // Compare payloads
+  const match = testPayload.length === stegoPayload.length && 
+    testPayload.every((b, i) => b === stegoPayload[i]);
+  console.log("Payload match:", match ? "SUCCESS" : "FAIL");
+  console.log("=== TEST COMPLETE ===");
 }
 
 /** Decode payload from image file. Returns payload as string (UTF-8) or base64 prefix. */
 export async function decodeImageFile(file: File): Promise<{ ok: boolean; payload?: string; error?: string }> {
   try {
-    const { data, width, height } = await fileToImageData(file);
-    const payload = decodeStegoFromRGBA(data.data, width, height);
+    let data: Uint8ClampedArray;
+    let width: number;
+    let height: number;
+    const isPng = file.type === "image/png" || file.name.toLowerCase().endsWith(".png");
+    console.log("[stego-web] decodeImageFile: file=", file.name, "type=", file.type, "isPng=", isPng);
+    if (isPng) {
+      const buf = await file.arrayBuffer();
+      console.log("[stego-web] decodeImageFile: raw PNG bytes=", buf.byteLength);
+      const decoded = decodePngToRGBA(buf);
+      data = decoded.data;
+      width = decoded.width;
+      height = decoded.height;
+      console.log("[stego-web] decodeImageFile: decoded PNG dims=", width, "x", height, "dataLen=", data.length);
+    } else {
+      const imageData = await fileToImageData(file);
+      data = imageData.data.data;
+      width = imageData.width;
+      height = imageData.height;
+      console.log("[stego-web] decodeImageFile: canvas dims=", width, "x", height);
+    }
+    const payload = decodeStegoFromRGBA(data, width, height);
     if (!payload || payload.length === 0) {
+      console.log("[stego-web] decodeImageFile: NO PAYLOAD FOUND");
       return { ok: false, error: "Not a Stegstr image (magic not found)" };
     }
+    console.log("[stego-web] decodeImageFile: payload found, len=", payload.length);
     const trimStart = (s: string) => s.replace(/^\s+/, "");
     const asUtf8 = new TextDecoder("utf-8", { fatal: false }).decode(payload);
     if (trimStart(asUtf8).startsWith("{")) {

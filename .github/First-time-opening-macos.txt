@@ -1,0 +1,7 @@
+First time opening Stegstr on macOS?
+
+Right-click (or Control-click) Stegstr → Open → click Open in the dialog.
+One dialog, then you can open Stegstr normally from then on.
+
+If you already double-clicked and see a security message: go to
+System Settings → Privacy & Security and click "Open Anyway" next to Stegstr.

@@ -2,7 +2,7 @@
  * Browser-only platform: file picker, stego in JS, download. No Tauri, no network for stego.
  */
 
-import { decodeImageFile, encodeImageFile } from "./stego-web";
+import { decodeDotImageFile, encodeDotImageFile } from "./stego-dot-web";
 
 export function isWeb(): boolean {
   return typeof window !== "undefined" && !(window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
@@ -28,14 +28,23 @@ function createFileInput(accept: string): Promise<File | null> {
   });
 }
 
-/** Pick one image file (for detect or cover). */
+/** Pick one image file (for detect or embed). */
 export function pickImageFile(): Promise<File | null> {
   return createFileInput("image/png,image/jpeg,image/gif,image/webp,image/bmp");
 }
 
 /** Decode stego payload from file. Same result shape as Tauri decode_stego_image. */
 export async function decodeStegoFile(file: File): Promise<{ ok: boolean; payload?: string; error?: string }> {
-  return decodeImageFile(file);
+  try {
+    console.log("[platform-web] decodeStegoFile: starting for", file.name, "size:", file.size, "type:", file.type);
+    const result = await decodeDotImageFile(file);
+    console.log("[platform-web] decodeStegoFile: result ok=", result.ok, "payloadLen=", result.payload?.length, "error=", result.error);
+    return result;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[platform-web] decodeStegoFile: exception:", e);
+    return { ok: false, error: `Decode error: ${msg}` };
+  }
 }
 
 /** Payload is either raw JSON string or "base64:..." (UTF-8 bytes for base64). */
@@ -50,20 +59,39 @@ function payloadStringToBytes(payload: string): Uint8Array {
   return new TextEncoder().encode(payload);
 }
 
-/** Encode cover image with payload; returns PNG blob. */
+/** Encode image with payload; returns PNG blob. */
 export async function encodeStegoToBlob(coverFile: File, payload: string): Promise<Blob> {
-  const payloadBytes = payloadStringToBytes(payload);
-  return encodeImageFile(coverFile, payloadBytes);
+  try {
+    const payloadBytes = payloadStringToBytes(payload);
+    console.log("[platform-web] encodeStegoToBlob: coverFile=", coverFile.name, "size=", coverFile.size);
+    console.log("[platform-web] encodeStegoToBlob: payload string len:", payload.length, "bytes len:", payloadBytes.length);
+    console.log("[platform-web] encodeStegoToBlob: first 16 bytes:", Array.from(payloadBytes.slice(0, 16)));
+    console.log("[platform-web] encodeStegoToBlob: first 8 as string:", String.fromCharCode(...payloadBytes.slice(0, 8)));
+    const blob = await encodeDotImageFile(coverFile, payloadBytes);
+    console.log("[platform-web] encodeStegoToBlob: success, blob size=", blob.size);
+    return blob;
+  } catch (e) {
+    console.error("[platform-web] encodeStegoToBlob: exception:", e);
+    throw e;
+  }
 }
 
 /** Trigger download of a blob with the given filename. */
 export function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename || "stegstr-embed.png";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  try {
+    console.log("[platform-web] downloadBlob: blob size=", blob.size, "filename=", filename);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename || "stegstr-embed.png";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Delay revoke to allow download to start
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    console.log("[platform-web] downloadBlob: download triggered");
+  } catch (e) {
+    console.error("[platform-web] downloadBlob: error:", e);
+    throw e;
+  }
 }
