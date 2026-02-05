@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import * as Nostr from "./nostr-stub";
 import { isWeb, pickImageFile, decodeStegoFile, encodeStegoToBlob, downloadBlob } from "./platform-web";
+import { getDotCapacityForFile } from "./stego-dot-web";
 import { getTauri } from "./platform-desktop";
 import { connectRelays, publishEvent, DEFAULT_RELAYS, getRelayUrls } from "./relay";
 import { extractImageUrls, mediaUrlsFromTags, isVideoUrl, contentWithoutImages, uint8ArrayToBase64 } from "./utils";
@@ -1351,12 +1352,52 @@ function App({ profile }: { profile: string | null }) {
             syntheticKind0.push(ev as NostrEvent);
           } catch (_) {}
         }
-        const bundle: NostrStateBundle = { version: STEGSTR_BUNDLE_VERSION, events: [...syntheticKind0, ...events] };
-        const jsonString = JSON.stringify(bundle);
-        addStegoLog(`Bundle: ${events.length} events, ${jsonString.length} bytes JSON`);
-        console.log("[App] Embed: bundle has", events.length, "events, JSON len:", jsonString.length);
-        addStegoLog("Encrypting for any Stegstr user...");
-        const encrypted = await stegoCrypto.encryptOpen(jsonString);
+        const buildBundle = async (eventList: NostrEvent[]) => {
+          const pubkeysInEmbed = new Set(
+            eventList.flatMap((e) => [e.pubkey, ...e.tags.filter((t) => t[0] === "p").map((t) => t[1])])
+          );
+          const kind0InEvents = new Set(eventList.filter((e) => e.kind === 0).map((e) => e.pubkey));
+          const synthetic: NostrEvent[] = [];
+          for (const pk of pubkeysInEmbed) {
+            if (!pk || kind0InEvents.has(pk)) continue;
+            const idForPk = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === pk);
+            if (!idForPk) continue;
+            const prof = profiles[pk];
+            if (!prof) continue;
+            try {
+              const content = JSON.stringify(prof);
+              const ev = await Nostr.finishEventAsync(
+                { kind: 0, content, tags: [], created_at: Math.floor(Date.now() / 1000) },
+                Nostr.hexToBytes(idForPk.privKeyHex)
+              );
+              synthetic.push(ev as NostrEvent);
+            } catch (_) {}
+          }
+          return { version: STEGSTR_BUNDLE_VERSION, events: [...synthetic, ...eventList] } as NostrStateBundle;
+        };
+        const maxPayloadBytes = await getDotCapacityForFile(embedCoverFile);
+        addStegoLog(`Dot capacity: ${maxPayloadBytes} bytes`);
+        let trimmedEvents = [...events];
+        let encrypted: Uint8Array | null = null;
+        while (true) {
+          const bundle = await buildBundle(trimmedEvents);
+          const jsonString = JSON.stringify(bundle);
+          addStegoLog(`Bundle: ${trimmedEvents.length} events, ${jsonString.length} bytes JSON`);
+          console.log("[App] Embed: bundle has", trimmedEvents.length, "events, JSON len:", jsonString.length);
+          addStegoLog("Encrypting for any Stegstr user...");
+          encrypted = await stegoCrypto.encryptOpen(jsonString);
+          if (!maxPayloadBytes || encrypted.length <= maxPayloadBytes) break;
+          if (trimmedEvents.length === 0) break;
+          trimmedEvents = trimmedEvents.slice(0, -1);
+        }
+        if (!encrypted || (maxPayloadBytes && encrypted.length > maxPayloadBytes)) {
+          setDecodeError("Image too small for stego payload");
+          setEmbedding(false);
+          return;
+        }
+        if (trimmedEvents.length < events.length) {
+          addStegoLog(`Trimmed events: kept ${trimmedEvents.length}/${events.length} to fit capacity`);
+        }
         addStegoLog(`Encrypted: ${encrypted.length} bytes (STEGSTR1 prefix: ${String.fromCharCode(...encrypted.slice(0, 8))})`);
         console.log("[App] Embed: encrypted len:", encrypted.length, "first 16:", Array.from(encrypted.slice(0, 16)));
         console.log("[App] Embed: first 8 as string:", String.fromCharCode(...encrypted.slice(0, 8)));

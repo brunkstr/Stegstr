@@ -5,7 +5,7 @@
 import { encodeRGBAtoPNG } from "./png-encode";
 import { decodePngToRGBA } from "./png-decode";
 import { fileToImageData } from "./stego-web";
-import { decodeDotFromRGBA, encodeDotIntoRGBA } from "./stego-dot";
+import { decodeDotFromRGBA, encodeDotIntoRGBA, getDotCapacityBytes } from "./stego-dot";
 
 export async function encodeDotImageFile(
   coverFile: File,
@@ -15,6 +15,11 @@ export async function encodeDotImageFile(
   const result = encodeDotIntoRGBA(data.data, width, height, payload);
   const pngBytes = encodeRGBAtoPNG(result.data, result.width, result.height);
   return new Blob([pngBytes], { type: "image/png" });
+}
+
+export async function getDotCapacityForFile(coverFile: File): Promise<number> {
+  const { width, height } = await fileToImageData(coverFile);
+  return getDotCapacityBytes(width, height);
 }
 
 export async function decodeDotImageFile(file: File): Promise<{ ok: boolean; payload?: string; error?: string }> {

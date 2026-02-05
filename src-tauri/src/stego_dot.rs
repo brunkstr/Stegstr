@@ -93,6 +93,33 @@ fn cell_positions(width: u32, height: u32) -> Vec<(u32, u32)> {
     out
 }
 
+fn gcd(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    a
+}
+
+fn spread_positions(positions: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    let len = positions.len();
+    if len <= 1 {
+        return positions;
+    }
+    let mut step: usize = 131;
+    while gcd(step, len) != 1 {
+        step += 2;
+    }
+    let mut ordered = vec![(0u32, 0u32); len];
+    let mut idx: usize = 0;
+    for i in 0..len {
+        ordered[i] = positions[idx];
+        idx = (idx + step) % len;
+    }
+    ordered
+}
+
 fn shuffle_positions(mut positions: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     if positions.len() <= 1 {
         return positions;
@@ -119,7 +146,7 @@ fn max_payload_bytes_for_image(img: &RgbImage) -> usize {
 
 fn encode_offset(img: &mut RgbImage, bits: &[u8]) -> Result<(), String> {
     let (w, h) = img.dimensions();
-    let positions = shuffle_positions(cell_positions(w, h));
+    let positions = spread_positions(cell_positions(w, h));
     let capacity_bits = (positions.len() * 2) / REPEAT;
     if bits.len() > capacity_bits {
         return Err(format!(
@@ -155,9 +182,10 @@ fn encode_offset(img: &mut RgbImage, bits: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn decode_offset(img: &RgbImage) -> Result<Vec<u8>, String> {
-    let (w, h) = img.dimensions();
-    let positions = shuffle_positions(cell_positions(w, h));
+fn decode_offset_with_positions(
+    img: &RgbImage,
+    positions: Vec<(u32, u32)>,
+) -> Result<Vec<u8>, String> {
     if positions.is_empty() {
         return Err("Image too small for dot decode".to_string());
     }
@@ -217,6 +245,20 @@ fn decode_offset(img: &RgbImage) -> Result<Vec<u8>, String> {
     }
     let payload_raw = &raw[2..2 + codeword_len];
     unwrap_payload(payload_raw)
+}
+
+fn decode_offset(img: &RgbImage) -> Result<Vec<u8>, String> {
+    let (w, h) = img.dimensions();
+    let base_positions = cell_positions(w, h);
+    if base_positions.is_empty() {
+        return Err("Image too small for dot decode".to_string());
+    }
+    let spread = spread_positions(base_positions.clone());
+    if let Ok(payload) = decode_offset_with_positions(img, spread) {
+        return Ok(payload);
+    }
+    let shuffled = shuffle_positions(base_positions);
+    decode_offset_with_positions(img, shuffled)
 }
 
 pub fn encode(image_path: &std::path::Path, payload: &[u8]) -> Result<Vec<u8>, String> {

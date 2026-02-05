@@ -10,6 +10,7 @@ const LENGTH_BYTES = 4;
 
 const STEP = 6;
 const OFFSET = 2;
+const REPEAT = 3;
 
 function bytesToBits(data: Uint8Array): number[] {
   const out: number[] = [];
@@ -78,6 +79,31 @@ function cellPositions(width: number, height: number): Array<[number, number]> {
   return positions;
 }
 
+function gcd(a: number, b: number): number {
+  let x = Math.abs(a);
+  let y = Math.abs(b);
+  while (y !== 0) {
+    const t = x % y;
+    x = y;
+    y = t;
+  }
+  return x;
+}
+
+function spreadPositions(positions: Array<[number, number]>): Array<[number, number]> {
+  const len = positions.length;
+  if (len <= 1) return positions.slice();
+  let step = 131;
+  while (gcd(step, len) !== 1) step += 2;
+  const ordered = new Array<[number, number]>(len);
+  let idx = 0;
+  for (let i = 0; i < len; i++) {
+    ordered[i] = positions[idx];
+    idx = (idx + step) % len;
+  }
+  return ordered;
+}
+
 export function encodeDotIntoRGBA(
   data: Uint8ClampedArray,
   width: number,
@@ -88,7 +114,8 @@ export function encodeDotIntoRGBA(
   const toEmbed = buildToEmbed(payload);
   const bits = bytesToBits(toEmbed);
   const positions = cellPositions(width, height);
-  const capacityBits = positions.length * 2;
+  const orderedPositions = spreadPositions(positions);
+  const capacityBits = Math.floor((orderedPositions.length * 2) / REPEAT);
   if (bits.length > capacityBits) {
     throw new Error(`Payload too large: need ${bits.length} bits, have ${capacityBits}`);
   }
@@ -98,29 +125,44 @@ export function encodeDotIntoRGBA(
     [1, 0],
     [1, 1],
   ];
-  let bitIdx = 0;
-  for (const [x, y] of positions) {
-    const b0 = bits[bitIdx] ?? 0;
-    const b1 = bits[bitIdx + 1] ?? 0;
+  const symbols: Array<[number, number]> = [];
+  for (let i = 0; i < bits.length; i += 2) {
+    symbols.push([bits[i] ?? 0, bits[i + 1] ?? 0]);
+  }
+  const neededCells = symbols.length * REPEAT;
+  if (neededCells > orderedPositions.length) {
+    throw new Error(`Payload too large: need ${neededCells} cells, have ${orderedPositions.length}`);
+  }
+  const stride = symbols.length;
+  for (let si = 0; si < symbols.length; si++) {
+    const [b0, b1] = symbols[si];
     const idx = ((b0 & 1) << 1) | (b1 & 1);
     const [bx, by] = offsets[idx];
-    const [wx, wy] = offsets[(idx + 2) % 4];
-    const bi = (y + by) * width * 4 + (x + bx) * 4;
-    raw[bi] = 0; raw[bi + 1] = 0; raw[bi + 2] = 0;
-    const wi = (y + wy) * width * 4 + (x + wx) * 4;
-    raw[wi] = 255; raw[wi + 1] = 255; raw[wi + 2] = 255;
-    bitIdx += 2;
-    if (bitIdx >= bits.length) break;
+    for (let r = 0; r < REPEAT; r++) {
+      const posIdx = si + r * stride;
+      if (posIdx >= orderedPositions.length) break;
+      const [x, y] = orderedPositions[posIdx];
+      for (const [ox, oy] of offsets) {
+        const wi = (y + oy) * width * 4 + (x + ox) * 4;
+        raw[wi] = 255;
+        raw[wi + 1] = 255;
+        raw[wi + 2] = 255;
+      }
+      const bi = (y + by) * width * 4 + (x + bx) * 4;
+      raw[bi] = 0;
+      raw[bi + 1] = 0;
+      raw[bi + 2] = 0;
+    }
   }
   return { data: raw, width, height };
 }
 
-export function decodeDotFromRGBA(
+function decodeFromPositions(
   data: Uint8ClampedArray,
   width: number,
-  height: number
+  positions: Array<[number, number]>,
+  repeat: number
 ): Uint8Array | null {
-  const positions = cellPositions(width, height);
   if (positions.length === 0) return null;
   const offsets: Array<[number, number]> = [
     [0, 0],
@@ -128,7 +170,7 @@ export function decodeDotFromRGBA(
     [1, 0],
     [1, 1],
   ];
-  const bits: number[] = [];
+  const symbols: number[] = [];
   for (const [x, y] of positions) {
     let minIdx = 0;
     let minVal = Number.MAX_SAFE_INTEGER;
@@ -141,7 +183,26 @@ export function decodeDotFromRGBA(
         minIdx = i;
       }
     }
-    bits.push((minIdx >> 1) & 1, minIdx & 1);
+    symbols.push(minIdx);
+  }
+  const stride = Math.floor(symbols.length / repeat);
+  if (stride === 0) return null;
+  const bits: number[] = [];
+  for (let si = 0; si < stride; si++) {
+    const counts = [0, 0, 0, 0];
+    for (let r = 0; r < repeat; r++) {
+      const sym = symbols[si + r * stride];
+      if (sym >= 0 && sym < 4) counts[sym] += 1;
+    }
+    let maxIdx = 0;
+    let maxCount = -1;
+    for (let i = 0; i < counts.length; i++) {
+      if (counts[i] > maxCount) {
+        maxCount = counts[i];
+        maxIdx = i;
+      }
+    }
+    bits.push((maxIdx >> 1) & 1, maxIdx & 1);
   }
   if (bits.length < 16) return null;
   const header = bitsToBytes(bits.slice(0, 16));
@@ -151,4 +212,27 @@ export function decodeDotFromRGBA(
   const raw = bitsToBytes(bits.slice(0, totalBits));
   const payloadRaw = raw.slice(2, 2 + codewordLen);
   return unwrapPayload(payloadRaw);
+}
+
+export function decodeDotFromRGBA(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number
+): Uint8Array | null {
+  const positions = cellPositions(width, height);
+  if (positions.length === 0) return null;
+  const spread = spreadPositions(positions);
+  const repeated = decodeFromPositions(data, width, spread, REPEAT);
+  if (repeated) return repeated;
+  const legacySpread = decodeFromPositions(data, width, spread, 1);
+  if (legacySpread) return legacySpread;
+  return decodeFromPositions(data, width, positions, 1);
+}
+
+export function getDotCapacityBytes(width: number, height: number): number {
+  const positions = cellPositions(width, height);
+  const capacityBits = Math.floor((positions.length * 2) / REPEAT);
+  const overheadBytes = 2 + MAGIC_LEN + LENGTH_BYTES;
+  const capacityBytes = Math.floor(capacityBits / 8);
+  return Math.max(0, capacityBytes - overheadBytes);
 }
