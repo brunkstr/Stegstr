@@ -1,15 +1,41 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import * as Nostr from "./nostr-stub";
 import { isWeb, pickImageFile, decodeStegoFile, encodeStegoToBlob, downloadBlob } from "./platform-web";
 import { getDotCapacityForFile } from "./stego-dot-web";
 import { getTauri } from "./platform-desktop";
 import { connectRelays, publishEvent, DEFAULT_RELAYS, getRelayUrls } from "./relay";
-import { extractImageUrls, mediaUrlsFromTags, isVideoUrl, contentWithoutImages, uint8ArrayToBase64 } from "./utils";
+import { uint8ArrayToBase64 } from "./utils";
+import {
+  decodeQimImageFile,
+  encodeQimImageFile,
+  resizeCoverForPlatform,
+  qimSelfTest,
+  getQimCapacityForFile,
+  PLATFORM_WIDTHS,
+  DEFAULT_PLATFORM,
+} from "./stego-qim";
 import { uploadMedia } from "./upload";
-import { ensureStegstrSuffix, MAX_NOTE_USER_CONTENT } from "./constants";
+import { ensureStegstrSuffix } from "./constants";
 import * as stegoCrypto from "./stego-crypto";
 import * as logger from "./logger";
-import type { NostrEvent, NostrStateBundle } from "./types";
+import { useToast, ToastContainer } from "./Toast";
+import type { NoteCardActions, NoteCardState } from "./NoteCard";
+import { NotificationsView } from "./NotificationsView";
+import { BookmarksView } from "./BookmarksView";
+import { ExploreView } from "./ExploreView";
+import { SettingsView } from "./SettingsView";
+import { IdentityView } from "./IdentityView";
+import { FollowingView } from "./FollowingView";
+import { MessagesView } from "./MessagesView";
+import { ProfileView } from "./ProfileView";
+import { FeedView } from "./FeedView";
+import type { FeedItem } from "./FeedView";
+import { EmbedModal } from "./EmbedModal";
+import type { StegoMethod } from "./EmbedModal";
+import { EditProfileModal } from "./EditProfileModal";
+import { LoginModal } from "./LoginModal";
+import { NewMessageModal } from "./NewMessageModal";
+import type { NostrEvent, NostrStateBundle, IdentityEntry, View, ProfileData } from "./types";
 import "./App.css";
 
 const STEGSTR_BUNDLE_VERSION = 1;
@@ -21,6 +47,8 @@ const BASE_MUTE_PUBKEYS = "stegstr_mute_pubkeys";
 const BASE_MUTE_WORDS = "stegstr_mute_words";
 const BASE_RELAYS = "stegstr_relays";
 const BASE_ZAP_QUEUE = "stegstr_zap_queue";
+const BASE_DM_READ = "stegstr_dm_read_timestamps";
+const BASE_NOTIF_READ = "stegstr_notification_read_at";
 
 /** Default follows for new local identities so the feed shows posts when network is on. */
 const DEFAULT_FOLLOW_NPUBS = [
@@ -151,19 +179,10 @@ function migrateToIdentities(profile: string | null): IdentityEntry[] {
   return migrated;
 }
 
-type View = "feed" | "messages" | "followers" | "notifications" | "profile" | "settings" | "bookmarks" | "explore" | "identity";
-
-export type IdentityEntry = {
-  id: string;
-  privKeyHex: string;
-  label: string;
-  type: "local" | "nostr";
-  /** local = data only steganographic (images); nostr = published to relays when Network ON. Convertible both ways. */
-  category: "local" | "nostr";
-  isPrivate?: boolean;
-};
+export type { IdentityEntry } from "./types";
 
 function App({ profile }: { profile: string | null }) {
+  const toast = useToast();
   const [identities, setIdentities] = useState<IdentityEntry[]>(() => migrateToIdentities(profile));
   const [actingPubkey, setActingPubkey] = useState<string | null>(() => {
     try {
@@ -186,7 +205,7 @@ function App({ profile }: { profile: string | null }) {
   const [loginFormOpen, setLoginFormOpen] = useState(false);
   const [networkEnabled, setNetworkEnabled] = useState(false);
   const [events, setEvents] = useState<NostrEvent[]>([]);
-  const [profiles, setProfiles] = useState<Record<string, { name?: string; about?: string; picture?: string; banner?: string; nip05?: string }>>({});
+  const [profiles, setProfiles] = useState<Record<string, ProfileData>>({});
   const [newPost, setNewPost] = useState("");
   const [postMediaUrls, setPostMediaUrls] = useState<string[]>([]);
   const [uploadingMedia, setUploadingMedia] = useState(false);
@@ -204,10 +223,31 @@ function App({ profile }: { profile: string | null }) {
   const [dmDecrypted, setDmDecrypted] = useState<Record<string, string>>({});
   const [searchQuery, setSearchQuery] = useState("");
   const [embedModalOpen, setEmbedModalOpen] = useState(false);
-  const [embedMethod] = useState<"dot">("dot");
+  const [embedMethod, setEmbedMethod] = useState<StegoMethod>("qim");
+  const [targetPlatform, setTargetPlatform] = useState<string>("instagram");
   const [embedCoverFile, setEmbedCoverFile] = useState<File | null>(null);
+  const [embedRecipientMode, setEmbedRecipientMode] = useState<"open" | "recipients">("open");
+  const [embedRecipientInput, setEmbedRecipientInput] = useState("");
+  const [embedRecipients, setEmbedRecipients] = useState<string[]>([]);
   const [selectedMessagePeer, setSelectedMessagePeer] = useState<string | null>(null);
   const [dmReplyContent, setDmReplyContent] = useState("");
+  const [lastReadTimestamps, setLastReadTimestamps] = useState<Record<string, number>>(() => {
+    try {
+      const raw = localStorage.getItem(getStorageKey(BASE_DM_READ, profile));
+      if (raw) {
+        const obj = JSON.parse(raw) as Record<string, number>;
+        if (typeof obj === "object" && obj !== null) return obj;
+      }
+    } catch (_) {}
+    return {};
+  });
+  const [lastNotifReadAt, setLastNotifReadAt] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem(getStorageKey(BASE_NOTIF_READ, profile));
+      if (raw) return Number(raw) || 0;
+    } catch (_) {}
+    return 0;
+  });
   const [newMessagePubkeyInput, setNewMessagePubkeyInput] = useState("");
   const [newMessageModalOpen, setNewMessageModalOpen] = useState(false);
   const [viewingProfilePubkey, setViewingProfilePubkey] = useState<string | null>(null);
@@ -262,13 +302,13 @@ function App({ profile }: { profile: string | null }) {
   const [embedding, setEmbedding] = useState(false);
   const [stegoProgress, setStegoProgress] = useState("");
   const [stegoLogs, setStegoLogs] = useState<string[]>([]);
+  const [dragOverStego, setDragOverStego] = useState(false);
   const [queuedZaps, setQueuedZaps] = useState<QueuedZap[]>(() => loadQueuedZaps(profile));
   const relayRef = useRef<ReturnType<typeof connectRelays> | null>(null);
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
-  const editPfpInputRef = useRef<HTMLInputElement | null>(null);
-  const editCoverInputRef = useRef<HTMLInputElement | null>(null);
   const postMediaInputRef = useRef<HTMLInputElement | null>(null);
   const loadingMoreRef = useRef(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const eventBufferRef = useRef<NostrEvent[]>([]);
   const FLUSH_MS = 120;
 
@@ -293,6 +333,16 @@ function App({ profile }: { profile: string | null }) {
       localStorage.setItem(getStorageKey(BASE_ZAP_QUEUE, profile), JSON.stringify(queuedZaps));
     } catch (_) {}
   }, [queuedZaps, profile]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(getStorageKey(BASE_DM_READ, profile), JSON.stringify(lastReadTimestamps));
+    } catch (_) {}
+  }, [lastReadTimestamps, profile]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(getStorageKey(BASE_NOTIF_READ, profile), String(lastNotifReadAt));
+    } catch (_) {}
+  }, [lastNotifReadAt, profile]);
 
   useEffect(() => {
     if (searchQuery.trim()) setReplyingTo(null);
@@ -377,6 +427,9 @@ function App({ profile }: { profile: string | null }) {
   const effectivePrivKey = actingIdentity?.privKeyHex ?? identities[0]?.privKeyHex ?? getOrCreateAnonKey(profile);
   const pubkey = Nostr.getPublicKey(Nostr.hexToBytes(effectivePrivKey));
   const selfPubkeys = Array.from(viewingPubkeys).length > 0 ? Array.from(viewingPubkeys) : [pubkey];
+  const selfPubkeysKey = useMemo(() => selfPubkeys.join(","), [selfPubkeys.length, ...selfPubkeys]);
+  const viewingPubkeysKey = useMemo(() => [...viewingPubkeys].join(","), [viewingPubkeys]);
+  const relayUrlsKey = useMemo(() => relayUrls.join(","), [relayUrls]);
   /** Only publish to Nostr relays when identity category is "nostr". Local = steganographic only. */
   const canPublishToNetwork = actingIdentity?.category === "nostr";
 
@@ -518,16 +571,15 @@ function App({ profile }: { profile: string | null }) {
   if (!searchPubkeyHex && /^[a-fA-F0-9]{64}$/.test(searchNoSpaces)) {
     searchPubkeyHex = searchNoSpaces.toLowerCase();
   }
+  const searchNoSpacesLower = searchNoSpaces.toLowerCase();
   const filteredRootNotes = searchTrim
     ? rootNotes.filter((n) => {
         if (searchPubkeyHex && n.pubkey.toLowerCase() === searchPubkeyHex) return true;
-        const pkLower = n.pubkey.toLowerCase();
-        const searchNoSpacesLower = searchNoSpaces.toLowerCase();
-        if (/^[a-f0-9]{8,64}$/.test(searchNoSpacesLower) && pkLower.includes(searchNoSpacesLower)) return true;
-        if (searchLower && pkLower.includes(searchLower)) return true;
+        // Partial hex match: only use no-spaces version for hex-like queries
+        if (/^[a-f0-9]{8,64}$/.test(searchNoSpacesLower) && n.pubkey.toLowerCase().includes(searchNoSpacesLower)) return true;
         const authorName = profiles[n.pubkey]?.name?.toLowerCase() ?? "";
-        if (authorName && authorName.includes(searchLower)) return true;
-        if (n.content.toLowerCase().includes(searchLower)) return true;
+        if (authorName && searchLower && authorName.includes(searchLower)) return true;
+        if (searchLower && n.content.toLowerCase().includes(searchLower)) return true;
         for (const t of n.tags) {
           if (t[0] === "t" && t[1]?.toLowerCase().includes(searchLower)) return true;
           if (t[1]?.toLowerCase().includes(searchLower)) return true;
@@ -553,7 +605,6 @@ function App({ profile }: { profile: string | null }) {
 
   const isNoteMuted = (n: NostrEvent) => mutedPubkeys.has(n.pubkey) || noteContentMatchesMutedWord(n.content);
 
-  type FeedItem = { type: "note"; note: NostrEvent; sortAt: number } | { type: "repost"; repost: NostrEvent; note: NostrEvent; sortAt: number };
   const exploreNotes = rootNotes
     .filter((n) => !isNoteMuted(n))
     .sort((a, b) => {
@@ -584,6 +635,14 @@ function App({ profile }: { profile: string | null }) {
       return true;
     })
     .sort((a, b) => b.sortAt - a.sortAt);
+
+  const publishViaRelay = useCallback((ev: NostrEvent) => {
+    if (relayRef.current) {
+      relayRef.current.publish(ev);
+    } else {
+      publishEvent(ev, relayUrls);
+    }
+  }, [relayUrls]);
 
   useEffect(() => {
     const authors = Array.from(viewingPubkeys).filter((pk) => pk && /^[a-fA-F0-9]{64}$/.test(pk));
@@ -625,9 +684,17 @@ function App({ profile }: { profile: string | null }) {
         setEvents((prev) => {
           const byId = new Map(prev.map((e) => [e.id, e]));
           batch.forEach((e) => byId.set(e.id, e));
-          return Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
+          let all = Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
+          const MAX_EVENTS = 10000;
+          if (all.length > MAX_EVENTS) {
+            const ownPks = new Set(selfPubkeys);
+            const own = all.filter((e) => ownPks.has(e.pubkey));
+            const rest = all.filter((e) => !ownPks.has(e.pubkey)).slice(0, MAX_EVENTS - own.length);
+            all = [...own, ...rest].sort((a, b) => b.created_at - a.created_at);
+          }
+          return all;
         });
-        const profileUpdates: Record<string, { name?: string; about?: string; picture?: string; banner?: string; nip05?: string }> = {};
+        const profileUpdates: Record<string, ProfileData> = {};
         batch.filter((e) => e.kind === 0).forEach((e) => {
           try {
             const raw = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
@@ -641,7 +708,20 @@ function App({ profile }: { profile: string | null }) {
           } catch (_) {}
         });
         if (Object.keys(profileUpdates).length > 0) {
-          setProfiles((p) => ({ ...p, ...profileUpdates }));
+          setProfiles((p) => {
+            const merged = { ...p, ...profileUpdates };
+            const MAX_PROFILES = 1000;
+            const keys = Object.keys(merged);
+            if (keys.length <= MAX_PROFILES) return merged;
+            const keepKeys = new Set<string>();
+            selfPubkeys.forEach((pk) => keepKeys.add(pk));
+            contacts.forEach((pk) => keepKeys.add(pk));
+            for (const k of Object.keys(profileUpdates)) keepKeys.add(k);
+            const evictable = keys.filter((k) => !keepKeys.has(k));
+            const toRemove = evictable.slice(0, keys.length - MAX_PROFILES);
+            for (const k of toRemove) delete merged[k];
+            return merged;
+          });
         }
       } catch (err) {
         console.error("[Stegstr] flush error", err);
@@ -655,7 +735,7 @@ function App({ profile }: { profile: string | null }) {
       eventBufferRef.current = [];
       setRelayStatus("");
     };
-  }, [networkEnabled, [...viewingPubkeys].join(","), relayUrls.join(",")]);
+  }, [networkEnabled, viewingPubkeysKey, relayUrlsKey]);
 
   useEffect(() => {
     const sentinel = loadMoreSentinelRef.current;
@@ -668,9 +748,11 @@ function App({ profile }: { profile: string | null }) {
         if (notesForMin.length === 0) return;
         const oldest = Math.min(...notesForMin.map((n) => n.created_at));
         loadingMoreRef.current = true;
+        setLoadingMore(true);
         relayRef.current?.requestMore(oldest);
         setTimeout(() => {
           loadingMoreRef.current = false;
+          setLoadingMore(false);
         }, 2000);
       },
       { rootMargin: "200px", threshold: 0 }
@@ -679,18 +761,20 @@ function App({ profile }: { profile: string | null }) {
     return () => observer.disconnect();
   }, [networkEnabled, view, events.length]);
 
+  const contactsKey = useMemo(() => [...contactsSet].join(","), [contactsSet.size]);
   useEffect(() => {
     if (!networkEnabled || !relayRef.current) return;
     const toFetch = new Set<string>(contacts);
     notes.forEach((n) => toFetch.add(n.pubkey));
     if (toFetch.size > 0) relayRef.current.requestProfiles([...toFetch].slice(0, 300));
-  }, [networkEnabled, [...contactsSet].join(","), notes.length]);
+  }, [networkEnabled, contactsKey, notes.length]);
 
+  const rootNoteIdsKey = useMemo(() => rootNotes.map((n) => n.id).join(","), [rootNotes.length]);
   useEffect(() => {
     if (!networkEnabled || !relayRef.current) return;
     const ids = rootNotes.map((n) => n.id);
     if (ids.length > 0) relayRef.current.requestReplies(ids);
-  }, [networkEnabled, rootNotes.map((n) => n.id).join(",")]);
+  }, [networkEnabled, rootNoteIdsKey]);
 
   useEffect(() => {
     if (relayStatus !== "Synced" || !relayRef.current) return;
@@ -748,24 +832,33 @@ function App({ profile }: { profile: string | null }) {
   }, [networkEnabled, viewingProfilePubkey, pubkey]);
 
   // When Nostr is acting and we lack profile data, aggressively fetch after relay syncs
+  const profileSyncRetryRef = useRef(0);
+  const profilesRef = useRef(profiles);
+  profilesRef.current = profiles;
   useEffect(() => {
     if (!networkEnabled || !relayRef.current || relayStatus !== "Synced") return;
     if (!actingPubkey || actingIdentity?.type !== "nostr") return;
-    const haveProfile = profiles[actingPubkey]?.name || profiles[actingPubkey]?.picture || profiles[actingPubkey]?.about;
-    if (haveProfile) return;
+    const haveProfile = profilesRef.current[actingPubkey]?.name || profilesRef.current[actingPubkey]?.picture || profilesRef.current[actingPubkey]?.about;
+    if (haveProfile) { profileSyncRetryRef.current = 0; return; }
+    if (profileSyncRetryRef.current >= 5) {
+      setStatus("Could not fetch profile from relays. Try toggling Network off/on.");
+      return;
+    }
+    profileSyncRetryRef.current++;
     relayRef.current.requestProfiles([actingPubkey]);
     relayRef.current.requestAuthor(actingPubkey);
     const timeouts: ReturnType<typeof setTimeout>[] = [];
     for (const delay of [1500, 3500, 7000]) {
       timeouts.push(
         setTimeout(() => {
+          if (profilesRef.current[actingPubkey]?.name || profilesRef.current[actingPubkey]?.picture) return;
           relayRef.current?.requestProfiles([actingPubkey]);
           relayRef.current?.requestAuthor(actingPubkey);
         }, delay)
       );
     }
     return () => timeouts.forEach((t) => clearTimeout(t));
-  }, [networkEnabled, relayStatus, actingPubkey, actingIdentity?.type, profiles]);
+  }, [networkEnabled, relayStatus, actingPubkey, actingIdentity?.type]);
 
   // NIP-50: when user searches by text (not pubkey), ask relays for matching notes and profiles (debounced)
   useEffect(() => {
@@ -825,7 +918,7 @@ function App({ profile }: { profile: string | null }) {
       myEvents.forEach((ev, i) => {
         setTimeout(() => {
           try {
-            publishEvent(ev, relayUrls);
+            publishViaRelay(ev);
           } catch (_) {}
         }, Math.floor(i / BATCH) * DELAY_MS);
       });
@@ -833,37 +926,83 @@ function App({ profile }: { profile: string | null }) {
     });
   }, [networkEnabled, pubkey, relayUrls, canPublishToNetwork]);
 
+  const dmCacheRef = useRef<Record<string, string>>({});
   const dmEventIds = dmEvents.map((e) => e.id).join(",");
   useEffect(() => {
     if (dmEvents.length === 0) {
+      dmCacheRef.current = {};
       setDmDecrypted({});
       return;
     }
     let cancelled = false;
-    const next: Record<string, string> = {};
+    const cached = dmCacheRef.current;
+    const newEvents = dmEvents.filter((ev) => !(ev.id in cached));
+    if (newEvents.length === 0) {
+      setDmDecrypted({ ...cached });
+      return;
+    }
     (async () => {
-      for (const ev of dmEvents) {
+      for (const ev of newEvents) {
         if (cancelled) return;
         const weAreSender = selfPubkeys.includes(ev.pubkey);
         const ourPk = weAreSender ? ev.pubkey : ev.tags.find((t) => t[0] === "p")?.[1];
         const otherPubkey = weAreSender ? ev.tags.find((t) => t[0] === "p")?.[1] : ev.pubkey;
         if (!ourPk || !otherPubkey || !selfPubkeys.includes(ourPk)) {
-          next[ev.id] = "[No peer]";
+          cached[ev.id] = "[No peer]";
           continue;
         }
         const identityForPk = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === ourPk);
         const privToUse = identityForPk?.privKeyHex ?? effectivePrivKey;
         try {
           const plain = await Nostr.nip04Decrypt(ev.content, privToUse, otherPubkey);
-          if (!cancelled) next[ev.id] = plain;
+          if (!cancelled) cached[ev.id] = plain;
         } catch {
-          if (!cancelled) next[ev.id] = "[Decryption failed]";
+          if (!cancelled) cached[ev.id] = "[Decryption failed]";
         }
       }
-      if (!cancelled) setDmDecrypted(next);
+      if (!cancelled) {
+        dmCacheRef.current = cached;
+        setDmDecrypted({ ...cached });
+      }
     })();
     return () => { cancelled = true; };
-  }, [identities, effectivePrivKey, dmEventIds, selfPubkeys.join(",")]);
+  }, [identities, effectivePrivKey, dmEventIds, selfPubkeysKey]);
+
+  // Mark DM conversation as read when user opens it
+  useEffect(() => {
+    if (selectedMessagePeer) {
+      setLastReadTimestamps((prev) => ({ ...prev, [selectedMessagePeer]: Math.floor(Date.now() / 1000) }));
+    }
+  }, [selectedMessagePeer]);
+
+  // Compute total unread DM count across all peers
+  const totalUnreadDmCount = useMemo(() => {
+    let count = 0;
+    for (const { pubkey: pk } of recentDmPartners) {
+      const lastRead = lastReadTimestamps[pk] ?? 0;
+      count += dmEvents.filter((ev) => {
+        // Only count messages FROM them (not our own sent messages)
+        if (selfPubkeys.includes(ev.pubkey)) return false;
+        const other = ev.pubkey;
+        return other === pk && ev.created_at > lastRead;
+      }).length;
+    }
+    return count;
+  }, [dmEvents, recentDmPartners, lastReadTimestamps, selfPubkeys]);
+
+  const totalUnreadNotifCount = useMemo(() => {
+    return notificationEvents.filter((ev) => ev.created_at > lastNotifReadAt).length;
+  }, [notificationEvents, lastNotifReadAt]);
+
+  // Mark notifications as read when viewing
+  useEffect(() => {
+    if (view === "notifications" && notificationEvents.length > 0) {
+      const latest = notificationEvents[0].created_at;
+      if (latest > lastNotifReadAt) {
+        setLastNotifReadAt(latest);
+      }
+    }
+  }, [view, notificationEvents, lastNotifReadAt]);
 
   const handleAddNostrIdentity = useCallback((hexOrNsec: string) => {
     const trimmed = hexOrNsec.trim();
@@ -962,19 +1101,38 @@ function App({ profile }: { profile: string | null }) {
       addStegoLog(`Selected: ${file.name} (${file.size} bytes, type: ${file.type})`);
       logger.logAction("detect_started", "Decoding stego image (browser)", { name: file.name });
       try {
-      setStegoProgress("Extracting hidden data (Dot decode)...");
-      addStegoLog("Running Dot steganography decode...");
-        console.log("[App] Starting decodeStegoFile for:", file.name, "size:", file.size);
-        const result = await decodeStegoFile(file);
-        console.log("[App] decodeStegoFile result:", result.ok, "error:", result.error, "payloadLen:", result.payload?.length);
-        if (!result.ok || !result.payload) {
-          const err = result.error || "Decode failed";
-          addStegoLog(`FAIL: ${err}`);
-          setDecodeError(err);
-          logger.logAction("detect_error", err, { name: file.name });
-          return;
+      // Try QIM first for JPEG files, then fall back to Dot
+      let result: { ok: boolean; payload?: string; error?: string } = { ok: false };
+      const isJpeg = file.type === "image/jpeg" || file.name.toLowerCase().endsWith(".jpg") || file.name.toLowerCase().endsWith(".jpeg");
+      if (isJpeg) {
+        setStegoProgress("Trying QIM decode (robust)...");
+        addStegoLog("Trying QIM steganography decode...");
+        try {
+          result = await decodeQimImageFile(file);
+          if (result.ok) {
+            addStegoLog(`QIM decode OK! Payload: ${result.payload?.length ?? 0} chars`);
+          } else {
+            addStegoLog(`QIM decode failed: ${result.error ?? "unknown"}, falling back to Dot...`);
+          }
+        } catch (qimErr) {
+          addStegoLog(`QIM decode error: ${qimErr instanceof Error ? qimErr.message : String(qimErr)}, falling back to Dot...`);
         }
-        addStegoLog(`Dot decode OK! Payload: ${result.payload.length} chars`);
+      }
+      if (!result.ok) {
+        setStegoProgress("Extracting hidden data (Dot decode)...");
+        addStegoLog("Running Dot steganography decode...");
+        console.log("[App] Starting decodeStegoFile for:", file.name, "size:", file.size);
+        result = await decodeStegoFile(file);
+        console.log("[App] decodeStegoFile result:", result.ok, "error:", result.error, "payloadLen:", result.payload?.length);
+      }
+      if (!result.ok || !result.payload) {
+        const err = result.error || "Decode failed";
+        addStegoLog(`FAIL: ${err}`);
+        setDecodeError(err);
+        logger.logAction("detect_error", err, { name: file.name });
+        return;
+      }
+      addStegoLog(`Decode OK! Payload: ${result.payload.length} chars`);
         const raw = result.payload;
         console.log("[App] Detected payload type:", raw.startsWith("base64:") ? "base64" : "json", "len:", raw.length);
         let jsonString: string;
@@ -1049,7 +1207,7 @@ function App({ profile }: { profile: string | null }) {
           normalized.forEach((e) => byId.set(e.id, e));
           return Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
         });
-        const profileUpdates: Record<string, { name?: string; about?: string; picture?: string; banner?: string; nip05?: string }> = {};
+        const profileUpdates: Record<string, ProfileData> = {};
         bundle.events.filter((e) => e.kind === 0).forEach((e) => {
           try {
             const c = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
@@ -1192,7 +1350,7 @@ function App({ profile }: { profile: string | null }) {
         normalized.forEach((e) => byId.set(e.id, e));
         return Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
       });
-      const profileUpdates: Record<string, { name?: string; about?: string; picture?: string; banner?: string; nip05?: string }> = {};
+      const profileUpdates: Record<string, ProfileData> = {};
       bundle.events.filter((e) => e.kind === 0).forEach((e) => {
         try {
           const raw = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
@@ -1375,40 +1533,120 @@ function App({ profile }: { profile: string | null }) {
           }
           return { version: STEGSTR_BUNDLE_VERSION, events: [...synthetic, ...eventList] } as NostrStateBundle;
         };
+        // Helper: encrypt and fit payload to capacity, trimming events if needed
+        const encryptAndFit = async (maxPayloadBytes: number) => {
+          let trimmedEvents = [...events];
+          let encrypted: Uint8Array | null = null;
+          while (true) {
+            const bundle = await buildBundle(trimmedEvents);
+            const jsonString = JSON.stringify(bundle);
+            addStegoLog(`Bundle: ${trimmedEvents.length} events, ${jsonString.length} bytes JSON`);
+            if (embedRecipientMode === "recipients" && embedRecipients.length > 0 && effectivePrivKey) {
+              const selfPk = Nostr.getPublicKey(Nostr.hexToBytes(effectivePrivKey));
+              const allRecipients = Array.from(new Set([selfPk, ...embedRecipients]));
+              addStegoLog(`Encrypting for ${allRecipients.length} recipient(s)...`);
+              encrypted = await stegoCrypto.encryptForRecipients(jsonString, effectivePrivKey, allRecipients);
+            } else {
+              addStegoLog("Encrypting for any Stegstr user...");
+              encrypted = await stegoCrypto.encryptOpen(jsonString);
+            }
+            if (!maxPayloadBytes || encrypted.length <= maxPayloadBytes) break;
+            if (trimmedEvents.length === 0) break;
+            trimmedEvents = trimmedEvents.slice(0, -1);
+          }
+          if (!encrypted || (maxPayloadBytes && encrypted.length > maxPayloadBytes)) {
+            return null;
+          }
+          if (trimmedEvents.length < events.length) {
+            addStegoLog(`Trimmed events: kept ${trimmedEvents.length}/${events.length} to fit capacity`);
+          }
+          addStegoLog(`Encrypted: ${encrypted.length} bytes`);
+          return encrypted;
+        };
+
+        if (embedMethod === "qim") {
+          // ===== QIM BRANCH =====
+          addStegoLog(`Using QIM method (target platform: ${targetPlatform})`);
+
+          // Step 1: Pre-resize cover for platform
+          setStegoProgress("Pre-resizing image for target platform...");
+          const platformWidth = PLATFORM_WIDTHS[targetPlatform] ?? PLATFORM_WIDTHS[DEFAULT_PLATFORM];
+          let resizedCover: File;
+          try {
+            resizedCover = await resizeCoverForPlatform(embedCoverFile, platformWidth);
+            addStegoLog(`Resized cover: ${resizedCover.name} (${resizedCover.size} bytes)`);
+          } catch (e) {
+            setDecodeError(`Resize failed: ${e instanceof Error ? e.message : String(e)}`);
+            setEmbedding(false);
+            return;
+          }
+
+          // Step 2: Check QIM capacity
+          const { capacityBytes: maxPayloadBytes, width: resW, height: resH } = await getQimCapacityForFile(embedCoverFile, targetPlatform);
+          addStegoLog(`QIM capacity: ${maxPayloadBytes} bytes (${resW}x${resH})`);
+
+          // Step 3: Encrypt and fit payload
+          const encrypted = await encryptAndFit(maxPayloadBytes);
+          if (!encrypted) {
+            setDecodeError("Image too small for stego payload (try a larger image or fewer events)");
+            setEmbedding(false);
+            return;
+          }
+
+          // Step 4: QIM embed
+          setStegoProgress("Embedding data into image (QIM encode)...");
+          addStegoLog("Running QIM steganography encode...");
+          let blob: Blob;
+          try {
+            blob = await encodeQimImageFile(resizedCover, encrypted);
+            addStegoLog(`QIM encode complete! Output: ${blob.size} bytes JPEG`);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            setDecodeError(`QIM encode failed: ${msg}`);
+            setEmbedding(false);
+            return;
+          }
+
+          // Step 5: Round-trip self-test
+          setStegoProgress("Verifying embed integrity (self-test)...");
+          addStegoLog("Running round-trip self-test...");
+          const selfTestResult = await qimSelfTest(blob, encrypted);
+          if (selfTestResult.ok) {
+            addStegoLog("Self-test PASSED! Payload survives encode/decode round-trip.");
+          } else {
+            addStegoLog(`Self-test FAILED: ${selfTestResult.error}`);
+            addStegoLog("WARNING: Payload may not survive platform transforms. Consider using Dot method instead.");
+          }
+
+          // Step 6: Download
+          const name = embedCoverFile.name.replace(/\.[^.]+$/, "") || "image";
+          setStegoProgress("Downloading embedded image...");
+          addStegoLog(`Triggering download: ${name}-stegstr.jpg`);
+          downloadBlob(blob, `${name}-stegstr.jpg`);
+          addStegoLog("SUCCESS - Download started!");
+          setEmbedModalOpen(false);
+          setEmbedCoverFile(null);
+          setEmbedding(false);
+          setStegoProgress("");
+          setStatus("Image downloaded. Save it from your Downloads folder.");
+          logger.logAction("embed_completed", "QIM embed saved (browser download)", { eventCount: events.length, platform: targetPlatform });
+          return;
+        }
+
+        // ===== DOT BRANCH (legacy) =====
         const maxPayloadBytes = await getDotCapacityForFile(embedCoverFile);
         addStegoLog(`Dot capacity: ${maxPayloadBytes} bytes`);
-        let trimmedEvents = [...events];
-        let encrypted: Uint8Array | null = null;
-        while (true) {
-          const bundle = await buildBundle(trimmedEvents);
-          const jsonString = JSON.stringify(bundle);
-          addStegoLog(`Bundle: ${trimmedEvents.length} events, ${jsonString.length} bytes JSON`);
-          console.log("[App] Embed: bundle has", trimmedEvents.length, "events, JSON len:", jsonString.length);
-          addStegoLog("Encrypting for any Stegstr user...");
-          encrypted = await stegoCrypto.encryptOpen(jsonString);
-          if (!maxPayloadBytes || encrypted.length <= maxPayloadBytes) break;
-          if (trimmedEvents.length === 0) break;
-          trimmedEvents = trimmedEvents.slice(0, -1);
-        }
-        if (!encrypted || (maxPayloadBytes && encrypted.length > maxPayloadBytes)) {
+        const encrypted = await encryptAndFit(maxPayloadBytes);
+        if (!encrypted) {
           setDecodeError("Image too small for stego payload");
           setEmbedding(false);
           return;
         }
-        if (trimmedEvents.length < events.length) {
-          addStegoLog(`Trimmed events: kept ${trimmedEvents.length}/${events.length} to fit capacity`);
-        }
-        addStegoLog(`Encrypted: ${encrypted.length} bytes (STEGSTR1 prefix: ${String.fromCharCode(...encrypted.slice(0, 8))})`);
-        console.log("[App] Embed: encrypted len:", encrypted.length, "first 16:", Array.from(encrypted.slice(0, 16)));
-        console.log("[App] Embed: first 8 as string:", String.fromCharCode(...encrypted.slice(0, 8)));
         const payloadToEmbed = "base64:" + uint8ArrayToBase64(encrypted);
-        console.log("[App] Embed: payloadToEmbed starts with:", payloadToEmbed.slice(0, 50));
         setStegoProgress("Embedding data into image (Dot encode)...");
         addStegoLog("Running Dot steganography encode...");
-        console.log("[App] Starting encodeStegoToBlob...");
         const blob = await encodeStegoToBlob(embedCoverFile, payloadToEmbed);
         addStegoLog(`Dot encode complete! Output: ${blob.size} bytes PNG`);
-        console.log("[App] encodeStegoToBlob completed, blob size:", blob.size);
         const name = embedCoverFile.name.replace(/\.[^.]+$/, "") || "image";
         setStegoProgress("Downloading embedded image...");
         addStegoLog(`Triggering download: ${name}-stegstr.png`);
@@ -1419,7 +1657,7 @@ function App({ profile }: { profile: string | null }) {
         setEmbedding(false);
         setStegoProgress("");
         setStatus("Image downloaded. Save it from your Downloads folder.");
-        logger.logAction("embed_completed", "Embed saved (browser download)", { eventCount: events.length });
+        logger.logAction("embed_completed", "Dot embed saved (browser download)", { eventCount: events.length });
         return;
       }
       const tauri = await getTauri();
@@ -1535,7 +1773,7 @@ function App({ profile }: { profile: string | null }) {
       setEmbedding(false);
       setStegoProgress("");
     }
-  }, [embedModalOpen, embedCoverFile, events, profiles, identities, addStegoLog]);
+  }, [embedModalOpen, embedCoverFile, events, profiles, identities, addStegoLog, embedRecipientMode, embedRecipients, effectivePrivKey, embedMethod, targetPlatform]);
 
   const resolvePubkeyFromInput = useCallback((input: string): string | null => {
     const s = input.trim().replace(/\s/g, "");
@@ -1567,7 +1805,7 @@ function App({ profile }: { profile: string | null }) {
         );
         setEvents((prev) => [ev as NostrEvent, ...prev]);
         setDmReplyContent("");
-        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Message sent");
         logger.logAction("dm_send", "DM sent", { to: theirPubkeyHex.slice(0, 8) + "…", networkEnabled });
       } catch (e) {
@@ -1598,7 +1836,7 @@ function App({ profile }: { profile: string | null }) {
     setEvents((prev) => [ev as NostrEvent, ...prev]);
     setNewPost("");
     setPostMediaUrls([]);
-    if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
+    if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
     setStatus("Posted");
     logger.logAction("post", "Posted note", { networkEnabled, contentLength: content.length, mediaCount: postMediaUrls.length });
   }, [effectivePrivKey, newPost, postMediaUrls, networkEnabled, canPublishToNetwork]);
@@ -1621,7 +1859,7 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => [ev as NostrEvent, ...prev]);
-        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Liked");
         logger.logAction("like", "Liked note", { noteId: note.id.slice(0, 8) + "…", networkEnabled });
       } catch (e) {
@@ -1650,7 +1888,7 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => [ev as NostrEvent, ...prev]);
-        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Reposted");
       } catch (e) {
         setStatus("Repost failed: " + (e instanceof Error ? e.message : String(e)));
@@ -1676,7 +1914,7 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => [ev as NostrEvent, ...prev]);
-        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Note deleted");
       } catch (e) {
         setStatus("Delete failed: " + (e instanceof Error ? e.message : String(e)));
@@ -1698,7 +1936,7 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => prev.filter((e) => !(e.kind === 10003 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Bookmarked");
       } catch (e) {
         setStatus("Bookmark failed: " + (e instanceof Error ? e.message : String(e)));
@@ -1720,7 +1958,7 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => prev.filter((e) => !(e.kind === 10003 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Removed from bookmarks");
       } catch (e) {
         setStatus("Unbookmark failed: " + (e instanceof Error ? e.message : String(e)));
@@ -1753,7 +1991,7 @@ function App({ profile }: { profile: string | null }) {
         setEvents((prev) => [ev as NostrEvent, ...prev]);
         setReplyingTo(null);
         setReplyContent("");
-        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Replied");
         logger.logAction("reply", "Replied to note", { rootId, networkEnabled });
       } catch (e) {
@@ -1776,7 +2014,7 @@ function App({ profile }: { profile: string | null }) {
     setQueuedZaps([]);
     pending.forEach((zap) => {
       try {
-        publishEvent(zap.event as NostrEvent, relayUrls);
+        publishViaRelay(zap.event as NostrEvent);
       } catch (_) {}
       openZapUrl(zap.zapStreamUrl);
     });
@@ -1813,7 +2051,7 @@ function App({ profile }: { profile: string | null }) {
         );
         const zapStreamUrl = `https://zap.stream/e/${note.id}`;
         if (networkEnabled) {
-          publishEvent(zapRequest as NostrEvent, relayUrls);
+          publishViaRelay(zapRequest as NostrEvent);
           openZapUrl(zapStreamUrl);
           setStatus("Zap sent");
         } else {
@@ -1877,44 +2115,10 @@ function App({ profile }: { profile: string | null }) {
     setEditProfileOpen(false);
     // Never publish kind 0 for Nostr identities—their profile lives on Nostr; publishing would overwrite it
     const isNostr = actingIdentity?.type === "nostr";
-    if (networkEnabled && canPublishToNetwork && !isNostr) publishEvent(ev as NostrEvent, relayUrls);
+    if (networkEnabled && canPublishToNetwork && !isNostr) publishViaRelay(ev as NostrEvent);
     setStatus(isNostr ? "Profile updated (local only)" : "Profile updated");
     logger.logAction("profile_edit", isNostr ? "Profile updated (local only)" : "Profile updated", { networkEnabled, isNostr });
   }, [effectivePrivKey, pubkey, editName, editAbout, editPicture, editBanner, networkEnabled, canPublishToNetwork, actingIdentity?.type]);
-
-  const handleEditPfpUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !file.type.startsWith("image/")) {
-      setStatus("Select an image file (jpg, png, gif, webp)");
-      return;
-    }
-    e.target.value = "";
-    setStatus("Uploading…");
-    try {
-      const url = await uploadMedia(file);
-      setEditPicture(url);
-      setStatus("Picture uploaded");
-    } catch (err) {
-      setStatus("Upload failed: " + (err instanceof Error ? err.message : String(err)));
-    }
-  }, []);
-
-  const handleEditCoverUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !file.type.startsWith("image/")) {
-      setStatus("Select an image file (jpg, png, gif, webp)");
-      return;
-    }
-    e.target.value = "";
-    setStatus("Uploading…");
-    try {
-      const url = await uploadMedia(file);
-      setEditBanner(url);
-      setStatus("Cover uploaded");
-    } catch (err) {
-      setStatus("Upload failed: " + (err instanceof Error ? err.message : String(err)));
-    }
-  }, []);
 
   const handlePostMediaUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -1957,7 +2161,7 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => prev.filter((e) => !(e.kind === 3 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Following");
         logger.logAction("follow", "Followed pubkey", { theirPk: theirPk.slice(0, 8) + "…", networkEnabled });
       } catch (e) {
@@ -1981,7 +2185,7 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => prev.filter((e) => !(e.kind === 3 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled && canPublishToNetwork) publishEvent(ev as NostrEvent, relayUrls);
+        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Unfollowed");
       } catch (e) {
         setStatus("Unfollow failed: " + (e instanceof Error ? e.message : String(e)));
@@ -2008,7 +2212,7 @@ function App({ profile }: { profile: string | null }) {
             { kind: ev.kind, content, tags: ev.tags, created_at: ev.created_at },
             sk
           );
-          publishEvent(newEv as NostrEvent, relayUrls);
+          publishViaRelay(newEv as NostrEvent);
           newEvents.push(newEv as NostrEvent);
         } catch (_) {}
       }
@@ -2022,6 +2226,41 @@ function App({ profile }: { profile: string | null }) {
     })();
     return () => { cancelled = true; };
   }, [actingIdentity, events, profile]);
+
+  // --- Shared NoteCard state & actions ---
+  const noteCardState: NoteCardState = useMemo(() => ({
+    profiles,
+    selfPubkeys,
+    getIdentityLabels: getIdentityLabelsForPubkey,
+    hasLiked,
+    hasBookmarked,
+    getLikeCount,
+    getZapCount,
+  }), [profiles, selfPubkeys, getIdentityLabelsForPubkey, hasLiked, hasBookmarked, getLikeCount, getZapCount]);
+
+  const navigateToProfile = useCallback((pk: string) => {
+    setViewingProfilePubkey(pk);
+    setView("profile");
+  }, []);
+
+  const noteCardActions: NoteCardActions = useMemo(() => ({
+    onNavigateProfile: navigateToProfile,
+    onReply: (ev: NostrEvent) => { setReplyingTo(ev); setReplyContent(""); },
+    onLike: handleLike,
+    onRepost: handleRepost,
+    onZap: handleZap,
+    onBookmark: handleBookmark,
+    onUnbookmark: handleUnbookmark,
+    onDelete: handleDelete,
+  }), [navigateToProfile, handleLike, handleRepost, handleZap, handleBookmark, handleUnbookmark, handleDelete]);
+
+  /** Actions for views that redirect reply to the feed. */
+  const noteCardActionsRedirectReply: NoteCardActions = useMemo(() => ({
+    ...noteCardActions,
+    onReply: (ev: NostrEvent) => { setReplyingTo(ev); setReplyContent(""); setView("feed"); },
+  }), [noteCardActions]);
+
+  const handleReplyCancel = useCallback(() => { setReplyingTo(null); setReplyContent(""); }, []);
 
   return (
     <main className="app-root primal-layout">
@@ -2148,10 +2387,10 @@ function App({ profile }: { profile: string | null }) {
           <nav className="side-nav">
             <button type="button" className={view === "feed" ? "active" : ""} onClick={() => setView("feed")}>Home</button>
             <button type="button" className={view === "identity" ? "active" : ""} onClick={() => setView("identity")}>Identity</button>
-            <button type="button" className={view === "notifications" ? "active" : ""} onClick={() => setView("notifications")}>Notifications</button>
-            <button type="button" className={view === "messages" ? "active" : ""} onClick={() => setView("messages")}>Messages</button>
+            <button type="button" className={view === "notifications" ? "active" : ""} onClick={() => setView("notifications")}>Notifications{totalUnreadNotifCount > 0 && <span className="nav-badge">{totalUnreadNotifCount}</span>}</button>
+            <button type="button" className={view === "messages" ? "active" : ""} onClick={() => setView("messages")}>Messages{totalUnreadDmCount > 0 && <span className="nav-badge">{totalUnreadDmCount}</span>}</button>
             <button type="button" className={view === "profile" ? "active" : ""} onClick={() => { setViewingProfilePubkey(null); setView("profile"); }}>Profile</button>
-            <button type="button" className={view === "followers" ? "active" : ""} onClick={() => setView("followers")}>Following</button>
+            <button type="button" className={view === "followers" ? "active" : ""} onClick={() => setView("followers")}>Following ({contactsSet.size})</button>
             <button type="button" className={view === "bookmarks" ? "active" : ""} onClick={() => setView("bookmarks")}>Bookmarks</button>
             <button type="button" className={view === "explore" ? "active" : ""} onClick={() => setView("explore")}>Explore</button>
             <button type="button" className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>Settings</button>
@@ -2160,1330 +2399,180 @@ function App({ profile }: { profile: string | null }) {
 
         <div className="main-content">
           {view === "feed" && (
-            <>
-              <section className="compose-section">
-                <div className="compose-avatar">
-                  {myPicture ? <img src={myPicture} alt="" /> : <span>{myName.slice(0, 1)}</span>}
-                </div>
-                <div className="compose-body">
-                  <textarea
-                    placeholder="What's happening?"
-                    value={newPost}
-                    onChange={(e) => setNewPost(e.target.value)}
-                    rows={3}
-                    className="wide"
-                    maxLength={MAX_NOTE_USER_CONTENT}
-                  />
-                  {postMediaUrls.length > 0 && (
-                    <div className="post-media-preview">
-                      {postMediaUrls.map((url, i) => (
-                        <span key={i} className="post-media-item">
-                          {url.match(/\.(gif|jpg|jpeg|png|webp)(\?|$)/i) ? (
-                            <img src={url} alt="" />
-                          ) : (
-                            <a href={url} target="_blank" rel="noreferrer">{url.slice(0, 40)}…</a>
-                          )}
-                          <button type="button" className="btn-remove muted" onClick={() => setPostMediaUrls((p) => p.filter((_, j) => j !== i))}>×</button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <div className="compose-actions">
-                    <input ref={postMediaInputRef} type="file" accept="image/*,video/*" multiple className="hidden-input" onChange={handlePostMediaUpload} />
-                    <button type="button" className="btn-secondary" onClick={() => postMediaInputRef.current?.click()} disabled={uploadingMedia} title="Add photo or video">
-                      {uploadingMedia ? "Uploading…" : "Attach"}
-                    </button>
-                    <button type="button" onClick={handlePost} className="btn-primary" disabled={(!newPost.trim() && postMediaUrls.length === 0) || uploadingMedia}>Post</button>
-                  </div>
-                  <p className="muted char-counter">{newPost.length}/{MAX_NOTE_USER_CONTENT} (appends &quot; Sent by Stegstr.&quot;)</p>
-                </div>
-              </section>
-
-              <section className="feed-section">
-                <div className="feed-header-row">
-                  <h2 className="feed-title">Feed</h2>
-                  <div className="feed-filter-tabs">
-                    <button type="button" className={feedFilter === "global" ? "active" : ""} onClick={() => setFeedFilter("global")}>Global</button>
-                    <button type="button" className={feedFilter === "following" ? "active" : ""} onClick={() => setFeedFilter("following")}>Following</button>
-                  </div>
-                </div>
-                {notes.length === 0 && (
-                  <p className="muted">No notes yet. Turn Network ON for relay feed, or load from image.</p>
-                )}
-                {searchTrim && (
-                  <>
-                    {(() => {
-                      const profileMatches = Object.entries(profiles).filter(
-                        ([pk, p]) => pk !== pubkey &&
-                          ((searchPubkeyHex && pk === searchPubkeyHex) ||
-                            p?.name?.toLowerCase().includes(searchLower) ||
-                            (typeof p?.nip05 === "string" && p.nip05.toLowerCase().includes(searchLower)) ||
-                            pk.toLowerCase().includes(searchNoSpaces.toLowerCase()))
-                      );
-                      if (searchPubkeyHex && profileMatches.length === 0 && feedItems.length === 0 && !profiles[searchPubkeyHex]) {
-                        return (
-                          <div className="profile-result-card">
-                            <p className="muted">No notes from this pubkey. View profile to follow.</p>
-                            <button type="button" className="btn-primary" onClick={() => { setViewingProfilePubkey(searchPubkeyHex); setView("profile"); }}>
-                              View profile ({searchPubkeyHex.slice(0, 12)}…)
-                            </button>
-                          </div>
-                        );
-                      }
-                      if (profileMatches.length > 0) {
-                        return (
-                          <div className="search-profiles-section">
-                            <h3 className="search-section-title">Profiles</h3>
-                            <ul className="profile-result-list">
-                              {profileMatches.slice(0, 10).map(([pk, p]) => (
-                                <li key={pk} className="profile-result-item">
-                                  {p?.picture ? <img src={p.picture} alt="" className="contact-avatar" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span className="contact-avatar placeholder">{(p?.name ?? pk).slice(0, 2)}</span>}
-                                  <div className="profile-result-info">
-                                    <strong>{p?.name ?? `${pk.slice(0, 12)}…`}</strong>
-                                    {p?.nip05 && <span className="muted"> {p.nip05}</span>}
-                                  </div>
-                                  <button type="button" className="btn-primary" onClick={() => { setViewingProfilePubkey(pk); setView("profile"); }}>View profile</button>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        );
-                      }
-                      if (feedItems.length === 0) {
-                        return (
-                          <p className="muted">
-                            {searchPubkeyHex || npubStr
-                      ? networkEnabled
-                        ? "No notes from this pubkey yet. If we just fetched, wait a moment; otherwise they may have no public notes on these relays."
-                        : "Turn Network ON to fetch this pubkey’s notes from relays, or load an image that contains their posts."
-                      : "No notes match your search."}
-                          </p>
-                        );
-                      }
-                      return null;
-                    })()}
-                  </>
-                )}
-                <ul className="note-list">
-                  {(() => {
-                    const rootIdForFocus = focusedNoteId
-                      ? (() => {
-                          const n = notes.find((n) => n.id === focusedNoteId);
-                          if (n) {
-                            const eTag = n.tags.find((t) => t[0] === "e");
-                            return eTag?.[1] ?? n.id;
-                          }
-                          return focusedNoteId;
-                        })()
-                      : null;
-                    const feedItemsSorted: FeedItem[] = !rootIdForFocus
-                      ? feedItems
-                      : [...feedItems].sort((a, b) => {
-                          const aId = a.type === "note" ? a.note.id : a.note.id;
-                          const bId = b.type === "note" ? b.note.id : b.note.id;
-                          if (aId === rootIdForFocus) return -1;
-                          if (bId === rootIdForFocus) return 1;
-                          return b.sortAt - a.sortAt;
-                        });
-                    return feedItemsSorted.map((item) => {
-                    const ev = item.type === "note" ? item.note : item.note;
-                    const replies = getRepliesTo(ev.id).sort((a, b) => a.created_at - b.created_at);
-                    const likeCount = getLikeCount(ev.id);
-                    const isFocused = rootIdForFocus && ev.id === rootIdForFocus;
-                    return (
-                      <li key={item.type === "repost" ? item.repost.id : ev.id} className={`note-thread${isFocused ? " focused" : ""}`}>
-                        {item.type === "repost" && (
-                          <p className="repost-label muted">
-                            <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(item.repost.pubkey); setView("profile"); }}>
-                              {(profiles[item.repost.pubkey]?.name ?? `${item.repost.pubkey.slice(0, 8)}…`)}
-                            </button>
-                            {" reposted"}
-                          </p>
-                        )}
-                        <div className="note-card">
-                          <div className="note-avatar">
-                            {profiles[ev.pubkey]?.picture ? (
-                              <img src={profiles[ev.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                            ) : (
-                              <span>{(profiles[ev.pubkey]?.name || ev.pubkey).slice(0, 1)}</span>
-                            )}
-                          </div>
-                          <div className="note-body">
-                            <div className="note-meta">
-                              <strong>
-                                <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(ev.pubkey); setView("profile"); }}>
-                                  {(profiles[ev.pubkey]?.name ?? `${ev.pubkey.slice(0, 8)}…`)}
-                                </button>
-                                {selfPubkeys.includes(ev.pubkey) && getIdentityLabelsForPubkey(ev.pubkey).map((l) => (
-                                  <span key={l} className="event-identity-tag">{l}</span>
-                                ))}
-                              </strong>
-                              <span className="note-time">{new Date(ev.created_at * 1000).toLocaleString()}</span>
-                            </div>
-                            <div className="note-content">
-                              {(contentWithoutImages(ev.content).trim() || ev.content.trim()) && (
-                                <p>{contentWithoutImages(ev.content).trim() || ev.content}</p>
-                              )}
-                              {(() => {
-                                const tagMedia = mediaUrlsFromTags(ev.tags);
-                                const contentUrls = extractImageUrls(ev.content);
-                                const urls = tagMedia.length > 0 ? tagMedia : contentUrls;
-                                if (urls.length === 0) return null;
-                                return (
-                                  <div className="note-images">
-                                    {urls.slice(0, 4).map((url, i) =>
-                                      isVideoUrl(url) ? (
-                                        <video key={i} src={url} controls className="note-img note-video" />
-                                      ) : (
-                                        <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                                      )
-                                    )}
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                            <div className="note-actions">
-                              <button type="button" className="note-action-btn" onClick={() => { setReplyingTo(ev); setReplyContent(""); }} title="Reply">
-                                Reply
-                              </button>
-                              <button
-                                type="button"
-                                className={`note-action-btn ${hasLiked(ev.id) ? "is-active" : ""}`}
-                                onClick={() => !hasLiked(ev.id) && handleLike(ev)}
-                                title="Like"
-                                disabled={!!hasLiked(ev.id)}
-                              >
-                                {hasLiked(ev.id) ? "Liked" : "Like"} <span className="action-count">{likeCount}</span>
-                              </button>
-                              <button type="button" className="note-action-btn" onClick={() => handleRepost(ev)} title="Repost">
-                                Repost
-                              </button>
-                              <button type="button" className="note-action-btn" onClick={() => handleZap(ev)} title="Zap">
-                                Zap <span className="action-count">{getZapCount(ev.id)}</span>
-                              </button>
-                              <span
-                                className="info-icon"
-                                tabIndex={0}
-                                data-tooltip="Zaps use Nostr. If Network is OFF, your zap is queued and sent once Network is ON."
-                              >
-                                ⓘ
-                              </span>
-                              <button
-                                type="button"
-                                className={`note-action-btn ${hasBookmarked(ev.id) ? "is-active" : ""}`}
-                                onClick={() => hasBookmarked(ev.id) ? handleUnbookmark(ev) : handleBookmark(ev)}
-                                title={hasBookmarked(ev.id) ? "Remove bookmark" : "Bookmark"}
-                              >
-                                {hasBookmarked(ev.id) ? "Unbookmark" : "Bookmark"}
-                              </button>
-                              {selfPubkeys.includes(ev.pubkey) && <button type="button" className="btn-delete muted" onClick={() => handleDelete(ev)} title="Delete">Delete</button>}
-                            </div>
-                          </div>
-                        </div>
-                        {replyingTo?.id === ev.id && (
-                          <div className="reply-box">
-                            <p className="muted">Replying to {(profiles[replyingTo.pubkey]?.name ?? replyingTo.pubkey.slice(0, 8))}…</p>
-                            <textarea value={replyContent} onChange={(e) => setReplyContent(e.target.value)} placeholder="Write a reply…" rows={2} className="wide" maxLength={MAX_NOTE_USER_CONTENT} />
-                            <p className="muted char-counter">{replyContent.length}/{MAX_NOTE_USER_CONTENT}</p>
-                            <div className="row">
-                              <button type="button" onClick={() => { setReplyingTo(null); setReplyContent(""); }}>Cancel</button>
-                              <button type="button" onClick={handleReply} className="btn-primary">Reply</button>
-                            </div>
-                          </div>
-                        )}
-                        {replies.length > 0 && (
-                          <ul className="note-replies">
-                            {replies.map((reply) => {
-                              const replyLikeCount = getLikeCount(reply.id);
-                              return (
-                              <li key={reply.id} className="note-card note-reply">
-                                <div className="note-avatar">
-                                  {profiles[reply.pubkey]?.picture ? (
-                                    <img src={profiles[reply.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                                  ) : (
-                                    <span>{(profiles[reply.pubkey]?.name || reply.pubkey).slice(0, 1)}</span>
-                                  )}
-                                </div>
-                                <div className="note-body">
-                                  <div className="note-meta">
-                                    <strong>
-                                      <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(reply.pubkey); setView("profile"); }}>
-                                        {(profiles[reply.pubkey]?.name ?? `${reply.pubkey.slice(0, 8)}…`)}
-                                        {selfPubkeys.includes(reply.pubkey) && getIdentityLabelsForPubkey(reply.pubkey).map((l) => (
-                                          <span key={l} className="event-identity-tag">{l}</span>
-                                        ))}
-                                      </button>
-                                    </strong>
-                                    <span className="note-time">{new Date(reply.created_at * 1000).toLocaleString()}</span>
-                                  </div>
-                                  <div className="note-content">
-                                    <p>{contentWithoutImages(reply.content).trim() || reply.content}</p>
-                                  </div>
-                                  <div className="note-actions">
-                                    <button type="button" className="note-action-btn" onClick={() => { setReplyingTo(reply); setReplyContent(""); }} title="Reply">
-                                      Reply
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className={`note-action-btn ${hasLiked(reply.id) ? "is-active" : ""}`}
-                                      onClick={() => !hasLiked(reply.id) && handleLike(reply)}
-                                      title="Like"
-                                      disabled={!!hasLiked(reply.id)}
-                                    >
-                                      {hasLiked(reply.id) ? "Liked" : "Like"} <span className="action-count">{replyLikeCount}</span>
-                                    </button>
-                                    <button type="button" className="note-action-btn" onClick={() => handleRepost(reply)} title="Repost">
-                                      Repost
-                                    </button>
-                                    <button type="button" className="note-action-btn" onClick={() => handleZap(reply)} title="Zap">
-                                      Zap <span className="action-count">{getZapCount(reply.id)}</span>
-                                    </button>
-                                    <span
-                                      className="info-icon"
-                                      tabIndex={0}
-                                      data-tooltip="Zaps use Nostr. If Network is OFF, your zap is queued and sent once Network is ON."
-                                    >
-                                      ⓘ
-                                    </span>
-                                    <button
-                                      type="button"
-                                      className={`note-action-btn ${hasBookmarked(reply.id) ? "is-active" : ""}`}
-                                      onClick={() => hasBookmarked(reply.id) ? handleUnbookmark(reply) : handleBookmark(reply)}
-                                      title={hasBookmarked(reply.id) ? "Remove bookmark" : "Bookmark"}
-                                    >
-                                      {hasBookmarked(reply.id) ? "Unbookmark" : "Bookmark"}
-                                    </button>
-                                    {selfPubkeys.includes(reply.pubkey) && <button type="button" className="btn-delete muted" onClick={() => handleDelete(reply)} title="Delete">Delete</button>}
-                                  </div>
-                                </div>
-                                {replyingTo?.id === reply.id && (
-                                  <div className="reply-box reply-box-inline">
-                                    <p className="muted">Replying to {(profiles[replyingTo.pubkey]?.name ?? replyingTo.pubkey.slice(0, 8))}…</p>
-                                    <textarea value={replyContent} onChange={(e) => setReplyContent(e.target.value)} placeholder="Write a reply…" rows={2} className="wide" maxLength={MAX_NOTE_USER_CONTENT} />
-                                    <p className="muted char-counter">{replyContent.length}/{MAX_NOTE_USER_CONTENT}</p>
-                                    <div className="row">
-                                      <button type="button" onClick={() => { setReplyingTo(null); setReplyContent(""); }}>Cancel</button>
-                                      <button type="button" onClick={handleReply} className="btn-primary">Reply</button>
-                                    </div>
-                                  </div>
-                                )}
-                              </li>
-                            );})}
-                          </ul>
-                        )}
-                      </li>
-                    );
-                  });
-                  })()}
-                  <li key="load-more-sentinel" aria-hidden="true">
-                    <div ref={loadMoreSentinelRef} style={{ height: 1, visibility: "hidden" }} />
-                  </li>
-                </ul>
-              </section>
-            </>
+            <FeedView
+              myPicture={myPicture}
+              myName={myName}
+              newPost={newPost}
+              setNewPost={setNewPost}
+              postMediaUrls={postMediaUrls}
+              setPostMediaUrls={setPostMediaUrls}
+              uploadingMedia={uploadingMedia}
+              postMediaInputRef={postMediaInputRef}
+              handlePostMediaUpload={handlePostMediaUpload}
+              handlePost={handlePost}
+              feedFilter={feedFilter}
+              setFeedFilter={setFeedFilter}
+              notesEmpty={notes.length === 0}
+              feedItems={feedItems}
+              searchTrim={searchTrim}
+              searchLower={searchLower}
+              searchNoSpaces={searchNoSpaces}
+              searchPubkeyHex={searchPubkeyHex}
+              npubStr={npubStr}
+              networkEnabled={networkEnabled}
+              profiles={profiles}
+              pubkey={pubkey}
+              focusedNoteId={focusedNoteId}
+              notes={notes}
+              getRepliesTo={getRepliesTo}
+              noteCardState={noteCardState}
+              noteCardActions={noteCardActions}
+              replyingTo={replyingTo}
+              replyContent={replyContent}
+              onReplyContentChange={setReplyContent}
+              handleReply={handleReply}
+              handleReplyCancel={handleReplyCancel}
+              loadingMore={loadingMore}
+              loadMoreSentinelRef={loadMoreSentinelRef}
+              setViewingProfilePubkey={setViewingProfilePubkey}
+              setView={setView}
+            />
           )}
 
           {view === "messages" && (
-            <section className="messages-view">
-              <h2>Messages</h2>
-              <p className="muted">Nostr DMs when Network is ON; you can also message any pubkey (npub or hex) and share via Embed image.</p>
-              <div className="messages-layout">
-                <div className="conversation-list-wrap">
-                  <button type="button" className="btn-new-message btn-primary" onClick={() => setNewMessageModalOpen(true)}>New message</button>
-                  <ul className="conversation-list">
-                    {recentDmPartners.map(({ pubkey: pk }) => {
-                      const thread = dmEvents
-                        .filter((ev) => {
-                          const other = selfPubkeys.includes(ev.pubkey) ? ev.tags.find((t) => t[0] === "p")?.[1] : ev.pubkey;
-                          return other === pk;
-                        })
-                        .sort((a, b) => a.created_at - b.created_at);
-                      const last = thread[thread.length - 1];
-                      const preview = last ? (dmDecrypted[last.id] ?? "[Decrypting…]").slice(0, 60) : "";
-                      const name = profiles[pk]?.name ?? `${pk.slice(0, 8)}…`;
-                      return (
-                        <li key={pk} className={selectedMessagePeer === pk ? "active" : ""}>
-                          <button type="button" className="conversation-item" onClick={() => setSelectedMessagePeer(pk)}>
-                            <span className="conversation-name">{name}</span>
-                            <span className="conversation-preview muted">{preview || "No messages"}</span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                  {recentDmPartners.length === 0 && (
-                    <p className="muted">No conversations yet. Use New message to start one (npub or hex pubkey).</p>
-                  )}
-                </div>
-                <div className="thread-wrap">
-                  {selectedMessagePeer ? (() => {
-                    const peerPk = selectedMessagePeer;
-                    const thread = dmEvents
-                      .filter((ev) => {
-                        const other = selfPubkeys.includes(ev.pubkey) ? ev.tags.find((t) => t[0] === "p")?.[1] : ev.pubkey;
-                        return other === peerPk;
-                      })
-                      .sort((a, b) => a.created_at - b.created_at);
-                    const peerName = profiles[peerPk]?.name ?? `${peerPk.slice(0, 8)}…${peerPk.slice(-4)}`;
-                    return (
-                      <>
-                        <div className="thread-header">
-                          <strong>Conversation with {peerName}</strong>
-                          <button type="button" className="btn-back" onClick={() => setSelectedMessagePeer(null)}>← Back</button>
-                        </div>
-                        <ul className="thread-messages">
-                          {thread.map((ev) => {
-                            const isFromThem = !selfPubkeys.includes(ev.pubkey);
-                            const content = dmDecrypted[ev.id] ?? "[Decrypting…]";
-                            const senderName = isFromThem ? (profiles[ev.pubkey]?.name ?? `${ev.pubkey.slice(0, 8)}…`) : myName;
-                            return (
-                              <li key={ev.id} className={isFromThem ? "msg-from" : "msg-to"}>
-                                <span className="msg-meta">{isFromThem ? "From" : "To"} {senderName} · {new Date(ev.created_at * 1000).toLocaleString()}</span>
-                                <p className="msg-content">{content}</p>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                        <div className="thread-reply">
-                          <textarea value={dmReplyContent} onChange={(e) => setDmReplyContent(e.target.value)} placeholder={`Reply to ${peerName}…`} rows={2} className="wide" />
-                          <button type="button" className="btn-primary" onClick={() => handleSendDm(peerPk, dmReplyContent)}>Send</button>
-                        </div>
-                      </>
-                    );
-                  })() : (
-                    <p className="muted">Select a conversation or start a New message.</p>
-                  )}
-                </div>
-              </div>
-            </section>
+            <MessagesView
+              dmEvents={dmEvents}
+              selfPubkeys={selfPubkeys}
+              dmDecrypted={dmDecrypted}
+              profiles={profiles}
+              lastReadTimestamps={lastReadTimestamps}
+              recentDmPartners={recentDmPartners}
+              selectedMessagePeer={selectedMessagePeer}
+              setSelectedMessagePeer={setSelectedMessagePeer}
+              myName={myName}
+              dmReplyContent={dmReplyContent}
+              setDmReplyContent={setDmReplyContent}
+              handleSendDm={handleSendDm}
+              onNewMessage={() => setNewMessageModalOpen(true)}
+            />
           )}
 
           {view === "followers" && (
-            <section className="followers-view">
-              <h2>Following</h2>
-              <p className="muted">From your Nostr contact list (kind 3). Unfollow to remove; search below to add by npub, hex pubkey, or name.</p>
-              <div className="following-add-wrap">
-                <input
-                  type="text"
-                  placeholder="npub, hex pubkey, or name to follow…"
-                  value={followingSearchInput}
-                  onChange={(e) => setFollowingSearchInput(e.target.value)}
-                  className="wide"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      const pk = resolvePubkeyFromInput(followingSearchInput);
-                      if (pk) { handleFollow(pk); setFollowingSearchInput(""); relayRef.current?.requestProfiles([pk]); }
-                      else if (followingSearchInput.trim()) {
-                        const matches = Object.entries(profiles).filter(
-                          ([pk, p]) => pk !== pubkey && !contactsSet.has(pk) &&
-                            (p?.name?.toLowerCase().includes(followingSearchInput.trim().toLowerCase()) ||
-                              (typeof p?.nip05 === "string" && p.nip05.toLowerCase().includes(followingSearchInput.trim().toLowerCase())))
-                        );
-                        if (matches.length === 0) setStatus("No match. Enter npub, hex pubkey, or try a name from your feed.");
-                      }
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={() => {
-                    const pk = resolvePubkeyFromInput(followingSearchInput);
-                    if (pk) { handleFollow(pk); setFollowingSearchInput(""); relayRef.current?.requestProfiles([pk]); }
-                    else if (followingSearchInput.trim()) {
-                      const matches = Object.entries(profiles).filter(
-                        ([pk, p]) => pk !== pubkey && !contactsSet.has(pk) &&
-                          (p?.name?.toLowerCase().includes(followingSearchInput.trim().toLowerCase()) ||
-                            (typeof p?.nip05 === "string" && p.nip05.toLowerCase().includes(followingSearchInput.trim().toLowerCase())))
-                      );
-                      if (matches.length === 0) setStatus("No match. Enter npub, hex pubkey, or try a name from your feed.");
-                    }
-                  }}
-                >
-                  Add
-                </button>
-              </div>
-              {followingSearchInput.trim() && !resolvePubkeyFromInput(followingSearchInput) && (() => {
-                const matches = Object.entries(profiles).filter(
-                  ([pk, p]) => pk !== pubkey && !contactsSet.has(pk) &&
-                    (p?.name?.toLowerCase().includes(followingSearchInput.trim().toLowerCase()) ||
-                      (typeof p?.nip05 === "string" && p.nip05.toLowerCase().includes(followingSearchInput.trim().toLowerCase())))
-                );
-                if (matches.length === 0) return null;
-                return (
-                  <div className="search-results profiles-search">
-                    <p className="muted">Profiles matching &quot;{followingSearchInput.trim()}&quot;</p>
-                    <ul className="contact-list">
-                      {matches.map(([pk, p]) => (
-                        <li key={pk} className="contact-list-item">
-                          {p?.picture ? <img src={p.picture} alt="" className="contact-avatar" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span className="contact-avatar placeholder">{(p?.name ?? pk).slice(0, 2)}</span>}
-                          <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(pk); setView("profile"); }}>
-                            {p?.name ?? `${pk.slice(0, 12)}…`}
-                          </button>
-                          <button type="button" className="btn-primary" onClick={() => { handleFollow(pk); setFollowingSearchInput(""); relayRef.current?.requestProfiles([pk]); setStatus("Following"); }}>Add</button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                );
-              })()}
-              <ul className="contact-list">
-                {[...contactsSet].map((pk) => (
-                  <li key={pk} className="contact-list-item">
-                    {profiles[pk]?.picture ? <img src={profiles[pk].picture!} alt="" className="contact-avatar" /> : <span className="contact-avatar placeholder">{pk.slice(0, 2)}</span>}
-                    <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(pk); setView("profile"); }}>
-                      {profiles[pk]?.name ?? `${pk.slice(0, 12)}…`}
-                    </button>
-                    <button type="button" className="btn-unfollow btn-secondary" onClick={() => handleUnfollow(pk)} title="Unfollow">Unfollow</button>
-                  </li>
-                ))}
-              </ul>
-              {contactsSet.size === 0 && <p className="muted">No one yet. Use the search above to add people.</p>}
-            </section>
+            <FollowingView
+              followingSearchInput={followingSearchInput}
+              setFollowingSearchInput={setFollowingSearchInput}
+              contactsSet={contactsSet}
+              profiles={profiles}
+              pubkey={pubkey}
+              resolvePubkeyFromInput={resolvePubkeyFromInput}
+              handleFollow={handleFollow}
+              handleUnfollow={handleUnfollow}
+              relayRef={relayRef}
+              onStatus={setStatus}
+              onNavigateProfile={(pk) => setViewingProfilePubkey(pk)}
+              setView={setView}
+            />
           )}
 
           {view === "explore" && (
-            <section className="explore-view">
-              <h2>Explore</h2>
-              <p className="muted">Notes with most likes (trending).</p>
-              <ul className="note-list">
-                {exploreNotes.map((ev) => {
-                  const replies = getRepliesTo(ev.id).sort((a, b) => a.created_at - b.created_at);
-                  const likeCount = getLikeCount(ev.id);
-                  return (
-                    <li key={ev.id} className="note-thread">
-                      <div className="note-card">
-                        <div className="note-avatar">
-                          {profiles[ev.pubkey]?.picture ? <img src={profiles[ev.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[ev.pubkey]?.name || ev.pubkey).slice(0, 1)}</span>}
-                        </div>
-                        <div className="note-body">
-                          <div className="note-meta">
-                            <strong>
-                              <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(ev.pubkey); setView("profile"); }}>
-                                {(profiles[ev.pubkey]?.name ?? `${ev.pubkey.slice(0, 8)}…`)}
-                              </button>
-                            </strong>
-                            <span className="note-time">{new Date(ev.created_at * 1000).toLocaleString()}</span>
-                            <span className="muted"> · {likeCount} like{likeCount !== 1 ? "s" : ""}</span>
-                          </div>
-                          <div className="note-content">
-                            {(contentWithoutImages(ev.content).trim() || ev.content.trim()) && <p>{contentWithoutImages(ev.content).trim() || ev.content}</p>}
-                            {(() => {
-                              const tagMedia = mediaUrlsFromTags(ev.tags);
-                              const contentUrls = extractImageUrls(ev.content);
-                              const urls = tagMedia.length > 0 ? tagMedia : contentUrls;
-                              if (urls.length === 0) return null;
-                              return (
-                                <div className="note-images">
-                                  {urls.slice(0, 4).map((url, i) =>
-                                    isVideoUrl(url) ? (
-                                      <video key={i} src={url} controls className="note-img note-video" />
-                                    ) : (
-                                      <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                                    )
-                                  )}
-                                </div>
-                              );
-                            })()}
-                          </div>
-                          <div className="note-actions">
-                            <button type="button" className="note-action-btn" onClick={() => { setReplyingTo(ev); setReplyContent(""); setView("feed"); }} title="Reply">
-                              Reply
-                            </button>
-                            <button
-                              type="button"
-                              className={`note-action-btn ${hasLiked(ev.id) ? "is-active" : ""}`}
-                              onClick={() => !hasLiked(ev.id) && handleLike(ev)}
-                              title="Like"
-                              disabled={!!hasLiked(ev.id)}
-                            >
-                              {hasLiked(ev.id) ? "Liked" : "Like"} <span className="action-count">{likeCount}</span>
-                            </button>
-                            <button type="button" className="note-action-btn" onClick={() => handleRepost(ev)} title="Repost">
-                              Repost
-                            </button>
-                            <button type="button" className="note-action-btn" onClick={() => handleZap(ev)} title="Zap">
-                              Zap <span className="action-count">{getZapCount(ev.id)}</span>
-                            </button>
-                            <span
-                              className="info-icon"
-                              tabIndex={0}
-                              data-tooltip="Zaps use Nostr. If Network is OFF, your zap is queued and sent once Network is ON."
-                            >
-                              ⓘ
-                            </span>
-                            <button
-                              type="button"
-                              className={`note-action-btn ${hasBookmarked(ev.id) ? "is-active" : ""}`}
-                              onClick={() => hasBookmarked(ev.id) ? handleUnbookmark(ev) : handleBookmark(ev)}
-                              title={hasBookmarked(ev.id) ? "Remove bookmark" : "Bookmark"}
-                            >
-                              {hasBookmarked(ev.id) ? "Unbookmark" : "Bookmark"}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                      {replies.length > 0 && (
-                        <ul className="note-replies">
-                          {replies.slice(0, 3).map((reply) => (
-                            <li key={reply.id} className="note-card note-reply">
-                              <div className="note-avatar">
-                                {profiles[reply.pubkey]?.picture ? <img src={profiles[reply.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[reply.pubkey]?.name || reply.pubkey).slice(0, 1)}</span>}
-                              </div>
-                              <div className="note-body">
-                                <div className="note-meta">
-                                  <strong>{profiles[reply.pubkey]?.name ?? `${reply.pubkey.slice(0, 8)}…`}</strong>
-                                  <span className="note-time">{new Date(reply.created_at * 1000).toLocaleString()}</span>
-                                </div>
-                                <div className="note-content"><p>{contentWithoutImages(reply.content).trim() || reply.content}</p></div>
-                              </div>
-                            </li>
-                          ))}
-                          {replies.length > 3 && <p className="muted">… and {replies.length - 3} more replies</p>}
-                        </ul>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-              {exploreNotes.length === 0 && <p className="muted">No notes yet. Turn Network ON for relay feed.</p>}
-            </section>
+            <ExploreView
+              notes={exploreNotes}
+              getRepliesTo={getRepliesTo}
+              getLikeCount={getLikeCount}
+              state={noteCardState}
+              actions={noteCardActionsRedirectReply}
+            />
           )}
 
           {view === "bookmarks" && (
-            <section className="bookmarks-view">
-              <h2>Bookmarks</h2>
-              <p className="muted">Notes you saved (kind 10003).</p>
-              <ul className="note-list">
-                {notes.filter((n) => bookmarkIds.has(n.id) && !deletedNoteIds.has(n.id)).sort((a, b) => b.created_at - a.created_at).map((ev) => {
-                  const replies = getRepliesTo(ev.id).sort((a, b) => a.created_at - b.created_at);
-                  const likeCount = getLikeCount(ev.id);
-                  return (
-                    <li key={ev.id} className="note-thread">
-                      <div className="note-card">
-                        <div className="note-avatar">
-                          {profiles[ev.pubkey]?.picture ? <img src={profiles[ev.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[ev.pubkey]?.name || ev.pubkey).slice(0, 1)}</span>}
-                        </div>
-                        <div className="note-body">
-                          <div className="note-meta">
-                            <strong>
-                              <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(ev.pubkey); setView("profile"); }}>
-                                {(profiles[ev.pubkey]?.name ?? `${ev.pubkey.slice(0, 8)}…`)}
-                              </button>
-                            </strong>
-                            <span className="note-time">{new Date(ev.created_at * 1000).toLocaleString()}</span>
-                          </div>
-                          <div className="note-content">
-                            {(contentWithoutImages(ev.content).trim() || ev.content.trim()) && <p>{contentWithoutImages(ev.content).trim() || ev.content}</p>}
-                            {(() => {
-                              const tagMedia = mediaUrlsFromTags(ev.tags);
-                              const contentUrls = extractImageUrls(ev.content);
-                              const urls = tagMedia.length > 0 ? tagMedia : contentUrls;
-                              if (urls.length === 0) return null;
-                              return (
-                                <div className="note-images">
-                                  {urls.slice(0, 4).map((url, i) =>
-                                    isVideoUrl(url) ? (
-                                      <video key={i} src={url} controls className="note-img note-video" />
-                                    ) : (
-                                      <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                                    )
-                                  )}
-                                </div>
-                              );
-                            })()}
-                          </div>
-                          <div className="note-actions">
-                            <button type="button" className="note-action-btn" onClick={() => { setReplyingTo(ev); setReplyContent(""); setView("feed"); }} title="Reply">
-                              Reply
-                            </button>
-                            <button
-                              type="button"
-                              className={`note-action-btn ${hasLiked(ev.id) ? "is-active" : ""}`}
-                              onClick={() => !hasLiked(ev.id) && handleLike(ev)}
-                              title="Like"
-                              disabled={!!hasLiked(ev.id)}
-                            >
-                              {hasLiked(ev.id) ? "Liked" : "Like"} <span className="action-count">{likeCount}</span>
-                            </button>
-                            <button type="button" className="note-action-btn" onClick={() => handleRepost(ev)} title="Repost">
-                              Repost
-                            </button>
-                            <button type="button" className="note-action-btn" onClick={() => handleZap(ev)} title="Zap">
-                              Zap <span className="action-count">{getZapCount(ev.id)}</span>
-                            </button>
-                            <span
-                              className="info-icon"
-                              tabIndex={0}
-                              data-tooltip="Zaps use Nostr. If Network is OFF, your zap is queued and sent once Network is ON."
-                            >
-                              ⓘ
-                            </span>
-                            <button type="button" className="note-action-btn is-active" onClick={() => handleUnbookmark(ev)} title="Remove bookmark">
-                              Unbookmark
-                            </button>
-                            {selfPubkeys.includes(ev.pubkey) && <button type="button" className="btn-delete muted" onClick={() => handleDelete(ev)} title="Delete">Delete</button>}
-                          </div>
-                        </div>
-                      </div>
-                      {replies.length > 0 && (
-                        <ul className="note-replies">
-                          {replies.map((reply) => (
-                            <li key={reply.id} className="note-card note-reply">
-                              <div className="note-avatar">
-                                {profiles[reply.pubkey]?.picture ? <img src={profiles[reply.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[reply.pubkey]?.name || reply.pubkey).slice(0, 1)}</span>}
-                              </div>
-                              <div className="note-body">
-                                <div className="note-meta">
-                                  <strong>{profiles[reply.pubkey]?.name ?? `${reply.pubkey.slice(0, 8)}…`}</strong>
-                                  <span className="note-time">{new Date(reply.created_at * 1000).toLocaleString()}</span>
-                                </div>
-                                <div className="note-content"><p>{contentWithoutImages(reply.content).trim() || reply.content}</p></div>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-              {bookmarkIds.size === 0 && <p className="muted">No bookmarks yet. Use Bookmark on any note to save it here.</p>}
-            </section>
+            <BookmarksView
+              notes={notes}
+              bookmarkIds={bookmarkIds}
+              deletedNoteIds={deletedNoteIds}
+              getRepliesTo={getRepliesTo}
+              state={noteCardState}
+              actions={noteCardActionsRedirectReply}
+            />
           )}
 
           {view === "notifications" && (
-            <section className="notifications-view">
-              <h2>Notifications</h2>
-              <p className="muted">Reactions and replies to your notes. Click a name to open their profile; click View post to see it in the feed.</p>
-              <ul className="event-list">
-                {notificationEvents.map((ev) => {
-                  const noteIdRef = ev.kind === 7 ? ev.tags.find((t) => t[0] === "e")?.[1] : ev.kind === 6 || ev.kind === 9735 ? ev.tags.find((t) => t[0] === "e")?.[1] : (ev.kind === 1 ? (ev.tags.find((t) => t[0] === "e")?.[1] ?? ev.id) : ev.id);
-                  return (
-                    <li key={ev.id} className="event notification-item">
-                      <span className="event-meta">
-                        {ev.kind === 7 ? "Like" : ev.kind === 6 ? "Repost" : ev.kind === 9735 ? "Zap" : "Reply"} from{" "}
-                        <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(ev.pubkey); setView("profile"); }}>
-                          {(profiles[ev.pubkey]?.name ?? `${ev.pubkey.slice(0, 8)}…`)}
-                        </button>
-                        {" · "}{new Date(ev.created_at * 1000).toLocaleString()}
-                      </span>
-                      {ev.kind === 1 && <p className="event-content">{contentWithoutImages(ev.content).trim() || ev.content}</p>}
-                      {ev.kind === 7 && <p className="event-content muted">{ev.content || "+"}</p>}
-                      {ev.kind === 6 && <p className="event-content muted">Reposted your note</p>}
-                      {ev.kind === 9735 && <p className="event-content muted">Zapped your note</p>}
-                      {noteIdRef && (
-                        <button type="button" className="link-like view-post-link" onClick={() => { setFocusedNoteId(noteIdRef); setView("feed"); }}>
-                          View post
-                        </button>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-              {notificationEvents.length === 0 && <p className="muted">No notifications yet.</p>}
-            </section>
+            <NotificationsView
+              events={notificationEvents}
+              profiles={profiles}
+              onNavigateProfile={navigateToProfile}
+              onViewPost={(noteId) => { setFocusedNoteId(noteId); setView("feed"); }}
+            />
           )}
 
           {view === "profile" && pubkey && (
-            <section className="profile-view">
-              <h2>{viewingProfilePubkey ? "Profile" : "My profile"}</h2>
-              {viewingProfilePubkey && (
-                <button type="button" className="btn-back" onClick={() => setViewingProfilePubkey(null)} style={{ marginBottom: "0.5rem" }}>← Back to feed</button>
-              )}
-              <div className="profile-header-card">
-                {(profiles[profileViewPubkey]?.banner ?? (profileViewPubkey === profileDisplayKey ? myBanner : null)) ? (
-                  <div className="profile-banner-wrap">
-                    <img src={profiles[profileViewPubkey]?.banner ?? myBanner!} alt="" className="profile-banner" />
-                  </div>
-                ) : (
-                  <div className="profile-banner-placeholder" />
-                )}
-                <div className="profile-header-body">
-                  {profiles[profileViewPubkey]?.picture ?? (profileViewPubkey === profileDisplayKey ? myPicture : null) ? (
-                    <img src={(profiles[profileViewPubkey]?.picture ?? myPicture)!} alt="" className="profile-avatar profile-avatar-overlay" />
-                  ) : (
-                    <div className="profile-avatar profile-avatar-overlay placeholder">{(profiles[profileViewPubkey]?.name ?? (profileViewPubkey === profileDisplayKey ? myName : profileViewPubkey)).slice(0, 1)}</div>
-                  )}
-                  <strong className="profile-name">{(profileViewPubkey === profileDisplayKey ? myName : (profiles[profileViewPubkey]?.name ?? `${profileViewPubkey.slice(0, 8)}…`))}</strong>
-                  <p
-                    className="profile-note pubkey-display pubkey-copy"
-                    title="Click to copy"
-                    onClick={async () => {
-                      const npub = Nostr.nip19.npubEncode(profileViewPubkey);
-                      await navigator.clipboard.writeText(npub);
-                      setStatus("Copied!");
-                      setTimeout(() => setStatus(""), 1500);
-                    }}
-                  >
-                    {Nostr.nip19.npubEncode(profileViewPubkey)}
-                  </p>
-                  {(profiles[profileViewPubkey]?.nip05 ?? (profileViewPubkey === profileDisplayKey && myProfile?.nip05)) && (
-                    <p className="profile-note profile-nip05 muted">{(profileViewPubkey === profileDisplayKey ? myProfile?.nip05 : profiles[profileViewPubkey]?.nip05)}</p>
-                  )}
-                  {(profiles[profileViewPubkey]?.about ?? (profileViewPubkey === profileDisplayKey ? myAbout : "")) && (
-                    <p className="profile-about">{(profileViewPubkey === profileDisplayKey ? myAbout : profiles[profileViewPubkey]?.about) ?? ""}</p>
-                  )}
-                  <div className="profile-stats">
-                    <span><strong>{profileRootNotes.length}</strong> posts</span>
-                    <span><strong>{profileFollowing.length}</strong> following</span>
-                    <span><strong>{profileFollowers.length}</strong> followers</span>
-                  </div>
-                  {profileViewPubkey === profileDisplayKey ? (
-                    isNostrLoggedIn ? (
-                      <p className="profile-note muted">Your Nostr profile is fetched from relays. To update it, use a Nostr client (e.g. Damus, Primal).</p>
-                    ) : (
-                      <button type="button" className="btn-secondary" onClick={handleEditProfileOpen}>Edit profile</button>
-                    )
-                  ) : (
-                    contactsSet.has(profileViewPubkey)
-                      ? <button type="button" className="btn-secondary" onClick={() => handleUnfollow(profileViewPubkey)}>Unfollow</button>
-                      : <button type="button" className="btn-primary" onClick={() => handleFollow(profileViewPubkey)}>Follow</button>
-                  )}
-                </div>
-              </div>
-              {/* Profile Tabs: Notes / Replies */}
-              <div className="profile-tabs">
-                <button
-                  type="button"
-                  className={`profile-tab ${profileTab === "notes" ? "active" : ""}`}
-                  onClick={() => setProfileTab("notes")}
-                >
-                  Notes ({profileRootNotes.length})
-                </button>
-                <button
-                  type="button"
-                  className={`profile-tab ${profileTab === "replies" ? "active" : ""}`}
-                  onClick={() => setProfileTab("replies")}
-                >
-                  Replies ({profileReplies.length})
-                </button>
-              </div>
-
-              {/* Notes Tab */}
-              {profileTab === "notes" && (
-                <ul className="note-list">
-                  {profileRootNotes.length === 0 && <p className="muted">No posts yet.</p>}
-                  {profileRootNotes.map((ev) => {
-                    const replies = getRepliesTo(ev.id).sort((a, b) => a.created_at - b.created_at);
-                    const likeCount = getLikeCount(ev.id);
-                    return (
-                      <li key={ev.id} className="note-thread">
-                        <div className="note-card">
-                          <div className="note-avatar">
-                            {profiles[ev.pubkey]?.picture ? <img src={profiles[ev.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[ev.pubkey]?.name || ev.pubkey).slice(0, 1)}</span>}
-                          </div>
-                          <div className="note-body">
-                            <div className="note-meta">
-                              <strong>{profiles[ev.pubkey]?.name ?? `${ev.pubkey.slice(0, 8)}…`}</strong>
-                              <span className="note-time">{new Date(ev.created_at * 1000).toLocaleString()}</span>
-                            </div>
-                            <div className="note-content">
-                              {(contentWithoutImages(ev.content).trim() || ev.content.trim()) && <p>{contentWithoutImages(ev.content).trim() || ev.content}</p>}
-                              {(() => {
-                                const tagMedia = mediaUrlsFromTags(ev.tags);
-                                const contentUrls = extractImageUrls(ev.content);
-                                const urls = tagMedia.length > 0 ? tagMedia : contentUrls;
-                                if (urls.length === 0) return null;
-                                return (
-                                  <div className="note-images">
-                                    {urls.slice(0, 4).map((url, i) =>
-                                      isVideoUrl(url) ? (
-                                        <video key={i} src={url} controls className="note-img note-video" />
-                                      ) : (
-                                        <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                                      )
-                                    )}
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                            <div className="note-actions">
-                              <button type="button" className="note-action-btn" onClick={() => { setReplyingTo(ev); setReplyContent(""); setView("feed"); }} title="Reply">
-                                Reply
-                              </button>
-                              <button
-                                type="button"
-                                className={`note-action-btn ${hasLiked(ev.id) ? "is-active" : ""}`}
-                                onClick={() => !hasLiked(ev.id) && handleLike(ev)}
-                                title="Like"
-                                disabled={!!hasLiked(ev.id)}
-                              >
-                                {hasLiked(ev.id) ? "Liked" : "Like"} <span className="action-count">{likeCount}</span>
-                              </button>
-                              <button type="button" className="note-action-btn" onClick={() => handleZap(ev)} title="Zap">
-                                Zap <span className="action-count">{getZapCount(ev.id)}</span>
-                              </button>
-                              <span
-                                className="info-icon"
-                                tabIndex={0}
-                                data-tooltip="Zaps use Nostr. If Network is OFF, your zap is queued and sent once Network is ON."
-                              >
-                                ⓘ
-                              </span>
-                              <button
-                                type="button"
-                                className={`note-action-btn ${hasBookmarked(ev.id) ? "is-active" : ""}`}
-                                onClick={() => hasBookmarked(ev.id) ? handleUnbookmark(ev) : handleBookmark(ev)}
-                                title={hasBookmarked(ev.id) ? "Remove bookmark" : "Bookmark"}
-                              >
-                                {hasBookmarked(ev.id) ? "Unbookmark" : "Bookmark"}
-                              </button>
-                              {selfPubkeys.includes(ev.pubkey) && <button type="button" className="btn-delete muted" onClick={() => handleDelete(ev)} title="Delete">Delete</button>}
-                            </div>
-                          </div>
-                        </div>
-                        {replies.length > 0 && (
-                          <ul className="note-replies">
-                            {replies.map((reply) => (
-                              <li key={reply.id} className="note-card note-reply">
-                                <div className="note-avatar">
-                                  {profiles[reply.pubkey]?.picture ? <img src={profiles[reply.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[reply.pubkey]?.name || reply.pubkey).slice(0, 1)}</span>}
-                                </div>
-                                <div className="note-body">
-                                  <div className="note-meta">
-                                    <strong>{profiles[reply.pubkey]?.name ?? `${reply.pubkey.slice(0, 8)}…`}</strong>
-                                    <span className="note-time">{new Date(reply.created_at * 1000).toLocaleString()}</span>
-                                  </div>
-                                  <div className="note-content"><p>{contentWithoutImages(reply.content).trim() || reply.content}</p></div>
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-
-              {/* Replies Tab - shows user's replies with parent context */}
-              {profileTab === "replies" && (
-                <ul className="note-list">
-                  {profileReplies.length === 0 && <p className="muted">No replies yet.</p>}
-                  {profileReplies.map((reply) => {
-                    const eTag = reply.tags.find((t) => t[0] === "e");
-                    const parentId = eTag?.[1];
-                    const parentNote = parentId ? getParentNote(parentId) : null;
-                    const likeCount = getLikeCount(reply.id);
-                    return (
-                      <li key={reply.id} className="note-thread reply-thread">
-                        {/* Parent note (the note being replied to) */}
-                        {parentNote ? (
-                          <div className="note-card note-parent" onClick={() => { setViewingProfilePubkey(parentNote.pubkey); }} style={{ cursor: "pointer" }}>
-                            <div className="note-avatar note-avatar-small">
-                              {profiles[parentNote.pubkey]?.picture ? <img src={profiles[parentNote.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[parentNote.pubkey]?.name || parentNote.pubkey).slice(0, 1)}</span>}
-                            </div>
-                            <div className="note-body">
-                              <div className="note-meta">
-                                <strong>{profiles[parentNote.pubkey]?.name ?? `${parentNote.pubkey.slice(0, 8)}…`}</strong>
-                                <span className="note-time">{new Date(parentNote.created_at * 1000).toLocaleString()}</span>
-                              </div>
-                              <div className="note-content note-content-preview">
-                                <p>{(contentWithoutImages(parentNote.content).trim() || parentNote.content).slice(0, 200)}{(contentWithoutImages(parentNote.content).trim() || parentNote.content).length > 200 ? "…" : ""}</p>
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="note-card note-parent note-parent-missing">
-                            <p className="muted">Replying to a note not loaded</p>
-                          </div>
-                        )}
-                        {/* Thread connector line */}
-                        <div className="thread-connector" />
-                        {/* The user's reply */}
-                        <div className="note-card">
-                          <div className="note-avatar">
-                            {profiles[reply.pubkey]?.picture ? <img src={profiles[reply.pubkey].picture!} alt="" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span>{(profiles[reply.pubkey]?.name || reply.pubkey).slice(0, 1)}</span>}
-                          </div>
-                          <div className="note-body">
-                            <div className="note-meta">
-                              <strong>{profiles[reply.pubkey]?.name ?? `${reply.pubkey.slice(0, 8)}…`}</strong>
-                              <span className="note-time">{new Date(reply.created_at * 1000).toLocaleString()}</span>
-                            </div>
-                            <div className="note-content">
-                              {(contentWithoutImages(reply.content).trim() || reply.content.trim()) && <p>{contentWithoutImages(reply.content).trim() || reply.content}</p>}
-                              {(() => {
-                                const tagMedia = mediaUrlsFromTags(reply.tags);
-                                const contentUrls = extractImageUrls(reply.content);
-                                const urls = tagMedia.length > 0 ? tagMedia : contentUrls;
-                                if (urls.length === 0) return null;
-                                return (
-                                  <div className="note-images">
-                                    {urls.slice(0, 4).map((url, i) =>
-                                      isVideoUrl(url) ? (
-                                        <video key={i} src={url} controls className="note-img note-video" />
-                                      ) : (
-                                        <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                                      )
-                                    )}
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                            <div className="note-actions">
-                              <button type="button" className="note-action-btn" onClick={() => { setReplyingTo(reply); setReplyContent(""); setView("feed"); }} title="Reply">
-                                Reply
-                              </button>
-                              <button
-                                type="button"
-                                className={`note-action-btn ${hasLiked(reply.id) ? "is-active" : ""}`}
-                                onClick={() => !hasLiked(reply.id) && handleLike(reply)}
-                                title="Like"
-                                disabled={!!hasLiked(reply.id)}
-                              >
-                                {hasLiked(reply.id) ? "Liked" : "Like"} <span className="action-count">{likeCount}</span>
-                              </button>
-                              <button type="button" className="note-action-btn" onClick={() => handleZap(reply)} title="Zap">
-                                Zap <span className="action-count">{getZapCount(reply.id)}</span>
-                              </button>
-                              <span
-                                className="info-icon"
-                                tabIndex={0}
-                                data-tooltip="Zaps use Nostr. If Network is OFF, your zap is queued and sent once Network is ON."
-                              >
-                                ⓘ
-                              </span>
-                              <button
-                                type="button"
-                                className={`note-action-btn ${hasBookmarked(reply.id) ? "is-active" : ""}`}
-                                onClick={() => hasBookmarked(reply.id) ? handleUnbookmark(reply) : handleBookmark(reply)}
-                                title={hasBookmarked(reply.id) ? "Remove bookmark" : "Bookmark"}
-                              >
-                                {hasBookmarked(reply.id) ? "Unbookmark" : "Bookmark"}
-                              </button>
-                              {selfPubkeys.includes(reply.pubkey) && <button type="button" className="btn-delete muted" onClick={() => handleDelete(reply)} title="Delete">Delete</button>}
-                            </div>
-                          </div>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-              <h3 className="profile-section-title">Following</h3>
-              <ul className="contact-list">
-                {profileFollowing.slice(0, 50).map((pk) => (
-                  <li key={pk}>
-                    {profiles[pk]?.picture ? <img src={profiles[pk].picture!} alt="" className="contact-avatar" /> : <span className="contact-avatar placeholder">{pk.slice(0, 2)}</span>}
-                    <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(pk); setView("profile"); }}>
-                      {profiles[pk]?.name ?? `${pk.slice(0, 12)}…`}
-                    </button>
-                  </li>
-                ))}
-                {profileFollowing.length === 0 && <p className="muted">None yet.</p>}
-                {profileFollowing.length > 50 && <p className="muted">… and {profileFollowing.length - 50} more</p>}
-              </ul>
-              <h3 className="profile-section-title">Followers</h3>
-              <ul className="contact-list">
-                {profileFollowers.slice(0, 50).map((pk) => (
-                  <li key={pk}>
-                    {profiles[pk]?.picture ? <img src={profiles[pk].picture!} alt="" className="contact-avatar" /> : <span className="contact-avatar placeholder">{pk.slice(0, 2)}</span>}
-                    <button type="button" className="link-like" onClick={() => { setViewingProfilePubkey(pk); setView("profile"); }}>
-                      {profiles[pk]?.name ?? `${pk.slice(0, 12)}…`}
-                    </button>
-                  </li>
-                ))}
-                {profileFollowers.length === 0 && <p className="muted">None yet.</p>}
-                {profileFollowers.length > 50 && <p className="muted">… and {profileFollowers.length - 50} more</p>}
-              </ul>
-            </section>
+            <ProfileView
+              viewingProfilePubkey={viewingProfilePubkey}
+              setViewingProfilePubkey={setViewingProfilePubkey}
+              profileViewPubkey={profileViewPubkey}
+              profileDisplayKey={profileDisplayKey}
+              profiles={profiles}
+              myName={myName}
+              myPicture={myPicture}
+              myAbout={myAbout}
+              myBanner={myBanner}
+              myProfile={myProfile}
+              isNostrLoggedIn={isNostrLoggedIn}
+              contactsSet={contactsSet}
+              profileRootNotes={profileRootNotes}
+              profileReplies={profileReplies}
+              profileFollowing={profileFollowing}
+              profileFollowers={profileFollowers}
+              profileTab={profileTab}
+              setProfileTab={setProfileTab}
+              getRepliesTo={getRepliesTo}
+              getParentNote={getParentNote}
+              noteCardState={noteCardState}
+              noteCardActionsRedirectReply={noteCardActionsRedirectReply}
+              navigateToProfile={navigateToProfile}
+              handleFollow={handleFollow}
+              handleUnfollow={handleUnfollow}
+              handleEditProfileOpen={handleEditProfileOpen}
+              onStatus={setStatus}
+              setView={setView}
+            />
           )}
 
           {view === "identity" && (
-            <section className="identity-view">
-              <h2>Identity</h2>
-              <p className="identity-view-desc muted">
-                Choose which identities to view and which one acts (posts, DMs). Local = data only in images; Nostr = syncs to relays when Network is ON. Convert between them anytime.
-                <span
-                  className="info-icon"
-                  tabIndex={0}
-                  data-tooltip="Local identities keep data embedded in images only. Nostr identities publish to relays when Network is ON."
-                >
-                  ⓘ
-                </span>
-              </p>
-              <div className="identity-actions">
-                <button type="button" className="btn-primary" onClick={handleGenerate}>Create local identity</button>
-                <button type="button" className="btn-secondary" onClick={() => setLoginFormOpen(true)}>Add Nostr identity</button>
-              </div>
-              <ul className="identity-list">
-                {identities.map((id) => {
-                  const pk = Nostr.getPublicKey(Nostr.hexToBytes(id.privKeyHex));
-                  const isViewing = viewingPubkeys.has(pk);
-                  const isActing = actingPubkey === pk;
-                  const displayLabel = profiles[pk]?.name || id.label || pk.slice(0, 8) + "…";
-                  const category = id.category ?? (id.type === "nostr" ? "nostr" : "local");
-                  const categoryExplainer = "Local: data is only shared via embedded images (steganographic). Nostr: when Network is ON, your posts and profile are published to Nostr relays. You can convert between Local and Nostr at any time.";
-                  return (
-                    <li key={id.id} className="identity-card">
-                      <div className="identity-card-header">
-                        <span className="identity-card-name">{displayLabel}</span>
-                        <span className="identity-card-type" data-type={id.type}>{id.type}</span>
-                        <label className="identity-card-view">
-                          <input type="checkbox" checked={isViewing} onChange={() => setViewingPubkeys((prev) => { const n = new Set(prev); if (isViewing) n.delete(pk); else n.add(pk); return n; })} />
-                          View
-                          <span
-                            className="info-icon"
-                            tabIndex={0}
-                            data-tooltip="View controls which identities appear in your feeds and searches."
-                          >
-                            ⓘ
-                          </span>
-                        </label>
-                        <label className="identity-card-act">
-                          <input type="radio" name="acting" checked={isActing} onChange={() => setActingPubkey(pk)} />
-                          Act
-                          <span
-                            className="info-icon"
-                            tabIndex={0}
-                            data-tooltip="Act sets the identity used for posting, replying, liking, and zapping."
-                          >
-                            ⓘ
-                          </span>
-                        </label>
-                        {identities.length > 1 && (
-                          <button type="button" className="identity-card-remove" onClick={() => { const remaining = identities.filter((i) => i.id !== id.id); setIdentities(remaining); setViewingPubkeys((p) => { const n = new Set(p); n.delete(pk); return n; }); if (isActing && remaining[0]) setActingPubkey(Nostr.getPublicKey(Nostr.hexToBytes(remaining[0].privKeyHex))); }} title="Remove identity">Remove</button>
-                        )}
-                      </div>
-                      <div className="identity-card-pubkey">
-                        <span className="pubkey-copy" title="Click to copy npub" onClick={async () => { await navigator.clipboard.writeText(Nostr.nip19.npubEncode(pk)); setStatus("Copied!"); setTimeout(() => setStatus(""), 1500); }}>{Nostr.nip19.npubEncode(pk)}</span>
-                        <span
-                          className="info-icon"
-                          tabIndex={0}
-                          data-tooltip="Your public key (npub). Safe to share. Click it to copy."
-                        >
-                          ⓘ
-                        </span>
-                      </div>
-                      {/* Secret key reveal */}
-                      <div className="identity-card-nsec">
-                        <button
-                          type="button"
-                          className="identity-show-nsec-btn"
-                          onClick={() => setShowNsecFor(showNsecFor === id.id ? null : id.id)}
-                        >
-                          {showNsecFor === id.id ? "Hide secret key" : "Show secret key"}
-                        </button>
-                        {showNsecFor === id.id && (
-                          <div className="identity-nsec-reveal">
-                            <p className="nsec-warning">Keep this secret! Anyone with this key controls this identity. Save it to restore this identity later.</p>
-                            <code className="nsec-value">{Nostr.nip19.nsecEncode(Nostr.hexToBytes(id.privKeyHex))}</code>
-                            <button
-                              type="button"
-                              className="nsec-copy-btn"
-                              onClick={async () => {
-                                const nsec = Nostr.nip19.nsecEncode(Nostr.hexToBytes(id.privKeyHex));
-                                await navigator.clipboard.writeText(nsec);
-                                setStatus("Secret key copied!");
-                                setTimeout(() => setStatus(""), 2000);
-                              }}
-                            >
-                              Copy
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                      <div className="identity-card-category">
-                        <span className="identity-category-badge" data-category={category}>{category === "nostr" ? "Nostr" : "Local"}</span>
-                        <button
-                          type="button"
-                          className="identity-convert-btn"
-                          onClick={() => {
-                            const nextCat = category === "nostr" ? "local" : "nostr";
-                            setIdentities((prev) => prev.map((i) => (i.id === id.id ? { ...i, category: nextCat } : i)));
-                            setStatus(nextCat === "local" ? "Identity is now Local (steganographic only)" : "Identity is now Nostr (will sync when Network ON)");
-                          }}
-                          title={category === "nostr" ? "Convert to Local (data only in images)" : "Convert to Nostr (publish to relays when Network ON)"}
-                        >
-                          {category === "nostr" ? "Convert to Local" : "Convert to Nostr"}
-                        </button>
-                        <span className="identity-convert-info" title={categoryExplainer} aria-label="Info">ⓘ</span>
-                        <label className="identity-card-private">
-                          <input type="checkbox" checked={!!id.isPrivate} onChange={() => setIdentities((prev) => prev.map((i) => (i.id === id.id ? { ...i, isPrivate: !i.isPrivate } : i)))} />
-                          Private
-                          <span
-                            className="info-icon"
-                            tabIndex={0}
-                            data-tooltip="Private hides your profile by default (follow approvals coming later)."
-                          >
-                            ⓘ
-                          </span>
-                        </label>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-              {identities.some((i) => i.isPrivate) && (
-                <div className="identity-follow-requests">
-                  <h3 className="profile-section-title">Follow requests</h3>
-                  <p className="muted">When your profile is private, only approved followers can view. Follow requests will appear here when a NIP for follow requests is supported.</p>
-                </div>
-              )}
-            </section>
+            <IdentityView
+              identities={identities}
+              setIdentities={setIdentities}
+              profiles={profiles}
+              viewingPubkeys={viewingPubkeys}
+              setViewingPubkeys={setViewingPubkeys}
+              actingPubkey={actingPubkey}
+              setActingPubkey={setActingPubkey}
+              showNsecFor={showNsecFor}
+              setShowNsecFor={setShowNsecFor}
+              networkEnabled={networkEnabled}
+              relayRef={relayRef}
+              onGenerate={handleGenerate}
+              onLoginOpen={() => setLoginFormOpen(true)}
+              onStatus={setStatus}
+            />
           )}
 
           {view === "settings" && (
-            <section className="settings-view">
-              <h2>Settings</h2>
-              <h3 className="settings-section">
-                Identities
-                <span
-                  className="info-icon"
-                  tabIndex={0}
-                  data-tooltip="Public keys (npub) are safe to share. Secret keys (nsec) should never be shared."
-                >
-                  ⓘ
-                </span>
-              </h3>
-              <p className="muted">Public keys (npub). Click to copy.</p>
-              <ul className="settings-list">
-                {identities.map((id) => {
-                  const pk = Nostr.getPublicKey(Nostr.hexToBytes(id.privKeyHex));
-                  const label = profiles[pk]?.name || id.label || pk.slice(0, 8) + "…";
-                  return (
-                    <li key={id.id} className="settings-list-item settings-identity-item">
-                      <span className="muted">{label}</span>
-                      <span
-                        className="pubkey-copy muted"
-                        style={{ fontFamily: "monospace", fontSize: "0.8rem", wordBreak: "break-all" }}
-                        title="Click to copy npub"
-                        onClick={async () => {
-                          const npub = Nostr.nip19.npubEncode(pk);
-                          await navigator.clipboard.writeText(npub);
-                          setStatus("Copied!");
-                          setTimeout(() => setStatus(""), 1500);
-                        }}
-                      >
-                        {Nostr.nip19.npubEncode(pk)}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
-              <h3 className="settings-section">
-                Relays
-                <span
-                  className="info-icon"
-                  tabIndex={0}
-                  data-tooltip="Relays are Nostr servers that store and deliver events. Add your favorites here."
-                >
-                  ⓘ
-                </span>
-              </h3>
-              <p className="muted">Default is the Stegstr relay (proxy); relay path is managed by Stegstr. You can add or remove relay URLs below.</p>
-              <div className="mute-add-wrap">
-                <input
-                  type="url"
-                  placeholder="wss://…"
-                  value={newRelayUrl}
-                  onChange={(e) => setNewRelayUrl(e.target.value)}
-                  className="wide"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && newRelayUrl.trim()) {
-                      const url = newRelayUrl.trim().toLowerCase();
-                      if (url.startsWith("wss://") || url.startsWith("ws://")) {
-                        setRelayUrls((prev) => prev.includes(url) ? prev : [...prev, url]);
-                        setNewRelayUrl("");
-                      }
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => {
-                    if (newRelayUrl.trim()) {
-                      const url = newRelayUrl.trim().toLowerCase();
-                      if (url.startsWith("wss://") || url.startsWith("ws://")) {
-                        setRelayUrls((prev) => prev.includes(url) ? prev : [...prev, url]);
-                        setNewRelayUrl("");
-                      }
-                    }
-                  }}
-                >
-                  Add
-                </button>
-              </div>
-              <ul className="settings-list">
-                {relayUrls.map((url) => (
-                  <li key={url} className="settings-list-item">
-                    <span className="muted" style={{ wordBreak: "break-all" }}>{url}</span>
-                    <button type="button" className="btn-delete muted" onClick={() => setRelayUrls((prev) => prev.filter((u) => u !== url))}>Remove</button>
-                  </li>
-                ))}
-              </ul>
-              {relayUrls.length === 0 && <p className="muted">Add at least one relay (e.g. the Stegstr proxy or wss://relay.damus.io).</p>}
-              <h3 className="settings-section">Mute</h3>
-              <p className="muted">Muted users and words are hidden from feed and notifications.</p>
-              <div className="mute-add-wrap">
-                <input
-                  type="text"
-                  placeholder="npub / hex pubkey or word…"
-                  value={muteInput}
-                  onChange={(e) => setMuteInput(e.target.value)}
-                  className="wide"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      const pk = resolvePubkeyFromInput(muteInput.trim());
-                      if (pk) {
-                        setMutedPubkeys((prev) => new Set(prev).add(pk));
-                        setMuteInput("");
-                      } else if (muteInput.trim()) {
-                        setMutedWords((prev) => prev.includes(muteInput.trim().toLowerCase()) ? prev : [...prev, muteInput.trim().toLowerCase()]);
-                        setMuteInput("");
-                      }
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => {
-                    const pk = resolvePubkeyFromInput(muteInput.trim());
-                    if (pk) {
-                      setMutedPubkeys((prev) => new Set(prev).add(pk));
-                      setMuteInput("");
-                    } else if (muteInput.trim()) {
-                      setMutedWords((prev) => prev.includes(muteInput.trim().toLowerCase()) ? prev : [...prev, muteInput.trim().toLowerCase()]);
-                      setMuteInput("");
-                    }
-                  }}
-                >
-                  Add
-                </button>
-              </div>
-              {mutedPubkeys.size > 0 && (
-                <>
-                  <p className="settings-sub">Muted users</p>
-                  <ul className="settings-list">
-                    {[...mutedPubkeys].map((pk) => (
-                      <li key={pk} className="settings-list-item">
-                        <span className="muted">{pk.slice(0, 12)}…{pk.slice(-6)}</span>
-                        <button type="button" className="btn-delete muted" onClick={() => setMutedPubkeys((prev) => { const s = new Set(prev); s.delete(pk); return s; })}>Remove</button>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              {mutedWords.length > 0 && (
-                <>
-                  <p className="settings-sub">Muted words</p>
-                  <ul className="settings-list">
-                    {mutedWords.map((w) => (
-                      <li key={w} className="settings-list-item">
-                        <span className="muted">{w}</span>
-                        <button type="button" className="btn-delete muted" onClick={() => setMutedWords((prev) => prev.filter((x) => x !== w))}>Remove</button>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              <h3 className="settings-section">Stego</h3>
-              <p className="muted">Detect: load image to extract Nostr state. Embed: save current feed to image. When Network is OFF, use images to pass state P2P. Turn Network ON to sync local changes to relays.</p>
-              <p className="muted" style={{ marginTop: "0.5rem" }}>Stegstr 0.1.0</p>
-            </section>
+            <SettingsView
+              identities={identities}
+              profiles={profiles}
+              relayUrls={relayUrls}
+              setRelayUrls={setRelayUrls}
+              newRelayUrl={newRelayUrl}
+              setNewRelayUrl={setNewRelayUrl}
+              muteInput={muteInput}
+              setMuteInput={setMuteInput}
+              mutedPubkeys={mutedPubkeys}
+              setMutedPubkeys={setMutedPubkeys}
+              mutedWords={mutedWords}
+              setMutedWords={setMutedWords}
+              resolvePubkeyFromInput={resolvePubkeyFromInput}
+              onStatus={setStatus}
+            />
           )}
         </div>
 
@@ -3492,20 +2581,27 @@ function App({ profile }: { profile: string | null }) {
             <h3>Steganography</h3>
             <p className="muted">Detect image: load an image to extract data. Embed image: save your feed and messages to an image to share.</p>
             <div
-              className="stego-drop-zone"
+              className={`stego-drop-zone${dragOverStego ? " drag-active" : ""}`}
               aria-label="Drop image here to detect"
               onDragEnter={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                setDragOverStego(true);
               }}
               onDragOver={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 e.dataTransfer.dropEffect = "copy";
               }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setDragOverStego(false);
+              }}
               onDrop={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                setDragOverStego(false);
                 if (detecting) return;
                 const file = e.dataTransfer.files?.[0];
                 if (!file || !file.type.startsWith("image/")) {
@@ -3545,7 +2641,7 @@ function App({ profile }: { profile: string | null }) {
             </div>
             {stegoLogs.length > 0 && (
               <div className="stego-log">
-                <details open>
+                <details>
                   <summary>Stego Log ({stegoLogs.length} entries)</summary>
                   <pre className="stego-log-content">{stegoLogs.join("\n")}</pre>
                 </details>
@@ -3556,163 +2652,69 @@ function App({ profile }: { profile: string | null }) {
       </div>
 
       {newMessageModalOpen && (
-        <div className="modal-overlay" onClick={() => setNewMessageModalOpen(false)}>
-          <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
-            <h3>New message</h3>
-            <p className="muted">Type their name or public key (npub/hex). Search finds people from your feed and relays.</p>
-            <label>
-              Name or npub/hex pubkey
-              <input type="text" value={newMessagePubkeyInput} onChange={(e) => setNewMessagePubkeyInput(e.target.value)} placeholder="e.g. Alice or npub1…" className="wide" autoComplete="off" />
-            </label>
-            {newMessagePubkeyInput.trim() && !resolvePubkeyFromInput(newMessagePubkeyInput) && (() => {
-              const q = newMessagePubkeyInput.trim().toLowerCase();
-              const matches = Object.entries(profiles).filter(
-                ([pk, p]) => !selfPubkeys.includes(pk) &&
-                  (p?.name?.toLowerCase().includes(q) || (typeof p?.nip05 === "string" && p.nip05.toLowerCase().includes(q)) || pk.toLowerCase().includes(q))
-              );
-              if (matches.length === 0) return <p className="muted">No matches. Try a different name or enter npub/hex pubkey.</p>;
-              return (
-                <div className="search-results profiles-search">
-                  <p className="muted">Matching profiles—click to open conversation:</p>
-                  <ul className="contact-list">
-                    {matches.slice(0, 12).map(([pk, p]) => (
-                      <li key={pk} className="contact-list-item">
-                        {p?.picture ? <img src={p.picture} alt="" className="contact-avatar" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : <span className="contact-avatar placeholder">{(p?.name ?? pk).slice(0, 2)}</span>}
-                        <button type="button" className="link-like" onClick={() => { setSelectedMessagePeer(pk); setNewMessagePubkeyInput(""); setNewMessageModalOpen(false); }}>
-                          {p?.name ?? `${pk.slice(0, 12)}…`}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              );
-            })()}
-            <div className="row modal-actions">
-              <button type="button" onClick={() => setNewMessageModalOpen(false)}>Cancel</button>
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={() => {
-                  const pk = resolvePubkeyFromInput(newMessagePubkeyInput);
-                  if (pk) {
-                    setSelectedMessagePeer(pk);
-                    setNewMessagePubkeyInput("");
-                    setNewMessageModalOpen(false);
-                  } else {
-                    const q = newMessagePubkeyInput.trim().toLowerCase();
-                    const matches = Object.entries(profiles).filter(
-                      ([p, pr]) => !selfPubkeys.includes(p) &&
-                        (pr?.name?.toLowerCase().includes(q) || (typeof pr?.nip05 === "string" && pr.nip05.toLowerCase().includes(q)))
-                    );
-                    if (matches.length === 1) {
-                      setSelectedMessagePeer(matches[0][0]);
-                      setNewMessagePubkeyInput("");
-                      setNewMessageModalOpen(false);
-                    } else if (matches.length > 1) setStatus("Several matches—click one above or enter npub");
-                    else setStatus("No match. Enter a name (from your feed) or npub/hex pubkey.");
-                  }
-                }}
-              >
-                Open conversation
-              </button>
-            </div>
-          </div>
-        </div>
+        <NewMessageModal
+          onClose={() => setNewMessageModalOpen(false)}
+          input={newMessagePubkeyInput}
+          onInputChange={setNewMessagePubkeyInput}
+          profiles={profiles}
+          selfPubkeys={selfPubkeys}
+          resolvePubkey={resolvePubkeyFromInput}
+          onSelectPeer={setSelectedMessagePeer}
+          onStatus={setStatus}
+        />
       )}
 
       {loginFormOpen && (
-        <div className="modal-overlay" onClick={() => setLoginFormOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Log in with Nostr</h3>
-            <p className="muted">Enter your nsec or 64-char hex private key to use your Nostr account. Your local posts will be re-signed and published.</p>
-            <label>
-              nsec or hex key
-              <input type="password" value={nsec} onChange={(e) => setNsec(e.target.value)} placeholder="nsec1… or hex" className="wide" autoComplete="off" />
-            </label>
-            <div className="row modal-actions">
-              <button type="button" onClick={() => setLoginFormOpen(false)}>Cancel</button>
-              <button type="button" onClick={handleGenerate}>Generate new key</button>
-              <button type="button" onClick={handleLogin} className="btn-primary">Log in</button>
-            </div>
-          </div>
-        </div>
+        <LoginModal
+          onClose={() => setLoginFormOpen(false)}
+          nsec={nsec}
+          onNsecChange={setNsec}
+          onLogin={handleLogin}
+          onGenerate={handleGenerate}
+        />
       )}
 
       {embedModalOpen && (
-        <div className="modal-overlay" onClick={() => setEmbedModalOpen(false)}>
-          <div className="modal embed-modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Embed feed into image</h3>
-            <p className="muted">Data is encrypted so only Stegstr users can read it. DMs are encrypted for the recipient only.</p>
-            {isWeb() && (
-              <div className="embed-cover-web">
-                <p className="muted">Choose image:</p>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={async () => {
-                    const file = await pickImageFile();
-                    if (file) setEmbedCoverFile(file);
-                  }}
-                >
-                  {embedCoverFile ? embedCoverFile.name : "Choose image"}
-                </button>
-              </div>
-            )}
-            {embedding && (
-              <div className="stego-progress" style={{marginTop: "1rem"}}>
-                <p className="muted detect-status">{stegoProgress || "Processing..."}</p>
-                <div className="progress-bar"><div className="progress-bar-indeterminate"></div></div>
-              </div>
-            )}
-            <div className="row modal-actions">
-              <button type="button" onClick={() => setEmbedModalOpen(false)} disabled={embedding}>Cancel</button>
-              <button type="button" onClick={handleEmbedConfirm} className="btn-primary" disabled={embedding || (isWeb() && !embedCoverFile)}>
-                {embedding ? "Embedding..." : "Embed"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <EmbedModal
+          onClose={() => setEmbedModalOpen(false)}
+          onConfirm={handleEmbedConfirm}
+          embedding={embedding}
+          stegoProgress={stegoProgress}
+          embedCoverFile={embedCoverFile}
+          onCoverFileChange={setEmbedCoverFile}
+          recipientMode={embedRecipientMode}
+          onRecipientModeChange={setEmbedRecipientMode}
+          recipientInput={embedRecipientInput}
+          onRecipientInputChange={setEmbedRecipientInput}
+          recipients={embedRecipients}
+          onRecipientsChange={setEmbedRecipients}
+          profiles={profiles}
+          stegoMethod={embedMethod}
+          onStegoMethodChange={setEmbedMethod}
+          targetPlatform={targetPlatform}
+          onTargetPlatformChange={setTargetPlatform}
+        />
       )}
 
       {editProfileOpen && (
-        <div className="modal-overlay" onClick={() => setEditProfileOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Edit profile</h3>
-            <label>
-              Name
-              <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Display name" className="wide" />
-            </label>
-            <label>
-              About
-              <textarea value={editAbout} onChange={(e) => setEditAbout(e.target.value)} placeholder="Bio" rows={3} className="wide" />
-            </label>
-            <label>
-              Picture
-              <div className="edit-media-row">
-                <input type="url" value={editPicture} onChange={(e) => setEditPicture(e.target.value)} placeholder="https://… or upload" className="wide" />
-                <input ref={editPfpInputRef} type="file" accept="image/*" className="hidden-input" onChange={handleEditPfpUpload} />
-                <button type="button" className="btn-secondary" onClick={() => editPfpInputRef.current?.click()}>Choose file</button>
-              </div>
-            </label>
-            <label>
-              Cover / banner
-              <div className="edit-media-row">
-                <input type="url" value={editBanner} onChange={(e) => setEditBanner(e.target.value)} placeholder="https://… or upload" className="wide" />
-                <input ref={editCoverInputRef} type="file" accept="image/*" className="hidden-input" onChange={handleEditCoverUpload} />
-                <button type="button" className="btn-secondary" onClick={() => editCoverInputRef.current?.click()}>Choose file</button>
-              </div>
-            </label>
-            <div className="row modal-actions">
-              <button type="button" onClick={() => setEditProfileOpen(false)}>Cancel</button>
-              <button type="button" onClick={handleEditProfileSave} className="btn-primary">Save</button>
-            </div>
-          </div>
-        </div>
+        <EditProfileModal
+          onClose={() => setEditProfileOpen(false)}
+          onSave={handleEditProfileSave}
+          editName={editName}
+          onEditNameChange={setEditName}
+          editAbout={editAbout}
+          onEditAboutChange={setEditAbout}
+          editPicture={editPicture}
+          onEditPictureChange={setEditPicture}
+          editBanner={editBanner}
+          onEditBannerChange={setEditBanner}
+        />
       )}
 
       {(status || decodeError) && (
         <p className={decodeError ? "error" : "status"}>{decodeError || status}</p>
       )}
+      <ToastContainer toasts={toast.toasts} onDismiss={toast.dismiss} />
     </main>
   );
 }

@@ -245,6 +245,22 @@ button:active { background-color: #eee; }
 }
 .side-nav button:hover { background: #eee; }
 .side-nav button.active { background: #e0e0e0; color: #111; font-weight: 600; }
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.3em;
+  height: 1.3em;
+  padding: 0 0.35em;
+  margin-left: 0.4em;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  background: #e74c3c;
+  border-radius: 999px;
+  vertical-align: middle;
+}
 
 /* Main content */
 .main-content {
@@ -318,6 +334,7 @@ button:active { background-color: #eee; }
 .feed-filter-tabs button.active { background: #111; color: #fff; border-color: #111; }
 .feed-filter-tabs button:hover:not(.active) { background: #eee; }
 .note-list { list-style: none; padding: 0; margin: 0; }
+.loading-more-indicator { text-align: center; padding: 1rem; }
 .note-card {
   display: flex;
   gap: 0.75rem;
@@ -565,6 +582,7 @@ textarea { resize: vertical; min-height: 60px; }
   transition: background 0.15s, border-color 0.15s;
 }
 .stego-drop-zone:hover { border-color: #999; background: #f0f0f0; }
+.stego-drop-zone.drag-active { border-color: #4a90d9; background: #e8f0fe; }
 .detect-status { margin: 0.25rem 0; font-style: italic; }
 .stego-progress { margin: 0.5rem 0; }
 .stego-log { margin-top: 0.75rem; font-size: 0.75rem; }
@@ -726,6 +744,17 @@ textarea { resize: vertical; min-height: 60px; }
 .embed-recipient-list { list-style: none; padding: 0; margin: 0.5rem 0 0; max-height: 200px; overflow-y: auto; }
 .embed-recipient-list li { padding: 0.35rem 0; }
 .embed-recipient-list label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+.embed-method-selector { margin: 0.75rem 0; }
+.embed-section-label { font-weight: 500; font-size: 0.9rem; margin-bottom: 0.25rem; display: block; }
+.embed-platform-selector { margin: 0.75rem 0; }
+.embed-platform-selector select {
+  width: 100%;
+  padding: 0.4rem;
+  font-size: 0.9rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+}
 
 /* Reply threads */
 .note-thread { margin-bottom: 0; }
@@ -861,11 +890,14 @@ textarea { resize: vertical; min-height: 60px; }
     border-color: #444;
   }
   input:not([type="checkbox"]):not([type="radio"]),
-  textarea {
+  textarea,
+  select {
     background: #262626;
     border-color: #444;
     color: #eee;
   }
+  .embed-platform-selector select { background: #262626; color: #eee; border-color: #444; }
+  .embed-advanced { border-color: #444 !important; }
   input:not([type="checkbox"]):not([type="radio"])::placeholder,
   textarea::placeholder { color: #9a9a9a; }
   input:not([type="checkbox"]):not([type="radio"]):focus,
@@ -967,4 +999,50 @@ textarea { resize: vertical; min-height: 60px; }
   .identity-card-private { color: #b0b0b0; }
   .acting-identity { color: #b0b0b0; }
   .identity-card-view, .identity-card-act { color: #eee; }
+}
+
+/* Toast notifications */
+.toast-container {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 400px;
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  animation: toast-in 0.2s ease-out;
+  font-size: 0.9rem;
+}
+.toast-success { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+.toast-error { background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }
+.toast-info { background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; }
+.toast-message { flex: 1; }
+.toast-dismiss {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 0 0.25rem;
+  opacity: 0.6;
+  color: inherit;
+}
+.toast-dismiss:hover { opacity: 1; }
+@keyframes toast-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@media (prefers-color-scheme: dark) {
+  .toast-success { background: #1b3a1b; color: #81c784; border-color: #2e7d32; }
+  .toast-error { background: #3a1b1b; color: #ef9a9a; border-color: #c62828; }
+  .toast-info { background: #1b2a3a; color: #90caf9; border-color: #1565c0; }
 }

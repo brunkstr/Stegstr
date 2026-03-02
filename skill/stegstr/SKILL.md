@@ -101,7 +101,7 @@ PNG only (lossless). JPEG or other lossy formats will corrupt the hidden data.
 - **Length:** 4 bytes, big-endian
 - **Payload:** UTF-8 JSON or raw bytes (desktop app encrypts; CLI can embed raw or `--encrypt`)
 
-Decrypted bundle: `{ "version": 1, "events": [ ... Nostr events ... ] }`. Schema: [bundle.schema.json](https://github.com/brunkstr/Stegstr/blob/main/schema/bundle.schema.json).
+Decrypted bundle: `{ "version": 1, "events": [ ... Nostr events ... ] }`. Schema: [bundle.schema.json](https://raw.githubusercontent.com/brunkstr/Stegstr/main/schema/bundle.schema.json).
 
 ## Links
 

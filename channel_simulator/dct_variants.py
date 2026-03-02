@@ -42,11 +42,24 @@ from dct_stego import (
 TCM_AC_COUNT = 16
 TCM_RS_NSYM = 48
 RS64_NSYM = 64
-QIM_DELTA = 10  # Larger quantization for harsher real-world recompression
+QIM_DELTA = 14  # Tuned: 14 needed for WhatsApp standard (Q=65); 10 works for most others
 QIM_RS_NSYM = 128  # Stronger parity for harsh channels (WhatsApp)
-QIM_REPEAT = 3  # Repeat each bit to improve robustness (majority vote on decode)
-QIM_MAX_WIDTH = 800  # Pre-resize to WhatsApp max width to avoid extra resize in channel
+QIM_REPEAT = 5  # Tuned: 5x repeat for robust majority voting across all platforms
+QIM_MAX_WIDTH = 0  # 0 = use platform-matched pre-resize (see QIM_PLATFORM_WIDTHS)
+QIM_EMBED_QUALITY = 75  # Tuned: match or slightly below platform quality
 QIM_ERASURE_MARGIN = QIM_DELTA / 6.0  # Mark low-confidence bytes as erasures
+
+# Platform-matched pre-resize widths (key insight: match platform's max_width to avoid resize)
+QIM_PLATFORM_WIDTHS = {
+    "instagram": 1080,
+    "facebook": 2048,
+    "twitter": 1600,
+    "whatsapp_standard": 1600,
+    "whatsapp_hd": 4096,
+    "telegram_photo": 1920,
+    "imessage": 1280,
+}
+QIM_DEFAULT_WIDTH = 1080  # Universal default when platform unknown
 
 
 def _coeff_stream_tcm(Y: np.ndarray) -> list[tuple[int, int, int]]:
@@ -257,20 +270,23 @@ def _majority_bits(bits: list[int], repeat: int) -> list[int]:
     return out
 
 
-def encode_dct_qim(cover_path: str | Path, payload: bytes, quality: int = 85) -> bytes:
-    """QIM: Quantization Index Modulation with repetition + strong RS for WhatsApp."""
+def encode_dct_qim(cover_path: str | Path, payload: bytes, quality: int = 0, platform: str = "") -> bytes:
+    """QIM: Quantization Index Modulation with repetition + strong RS for WhatsApp.
+    quality=0 uses QIM_EMBED_QUALITY default. platform selects pre-resize width.
+    """
     cover_path = Path(cover_path)
     from PIL import Image
+    embed_quality = quality if quality > 0 else QIM_EMBED_QUALITY
+    max_width = QIM_PLATFORM_WIDTHS.get(platform, QIM_DEFAULT_WIDTH) if QIM_MAX_WIDTH <= 0 else QIM_MAX_WIDTH
     tmp = None
     if cover_path.suffix.lower() in (".png", ".gif", ".bmp", ".jpg", ".jpeg"):
         img = Image.open(cover_path).convert("RGB")
-        # Pre-resize to WhatsApp max to avoid additional resize later
-        if img.width > QIM_MAX_WIDTH:
-            ratio = QIM_MAX_WIDTH / img.width
+        if max_width > 0 and img.width > max_width:
+            ratio = max_width / img.width
             new_h = max(1, round(img.height * ratio))
-            img = img.resize((QIM_MAX_WIDTH, new_h), Image.Resampling.LANCZOS)
+            img = img.resize((max_width, new_h), Image.Resampling.LANCZOS)
         tmp = Path(tempfile.mktemp(suffix=".jpg"))
-        img.save(tmp, "JPEG", quality=quality, subsampling=0)
+        img.save(tmp, "JPEG", quality=embed_quality, subsampling=0)
         jpeg_path = tmp
     else:
         jpeg_path = cover_path

@@ -67,6 +67,8 @@ function connectRelay(
   const subId = "stegstr-feed-" + Math.random().toString(36).slice(2, 10);
   const subDm = "stegstr-dm-" + Math.random().toString(36).slice(2, 10);
   const dynamicSubIds = new Set<string>();
+  const dynamicSubTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  const MAX_DYNAMIC_SUBS = 20;
   const authors = ourPubkeys.length > 0 ? ourPubkeys : ["0000000000000000000000000000000000000000000000000000000000000000"];
 
   function send(payload: unknown[]) {
@@ -76,8 +78,17 @@ function connectRelay(
     } catch (_) {}
   }
 
+  function closeDynamicSub(id: string) {
+    send(["CLOSE", id]);
+    dynamicSubIds.delete(id);
+    const t = dynamicSubTimeouts.get(id);
+    if (t) { clearTimeout(t); dynamicSubTimeouts.delete(id); }
+  }
+
   function close() {
     closed = true;
+    dynamicSubTimeouts.forEach((t) => clearTimeout(t));
+    dynamicSubTimeouts.clear();
     if (ws && ws.readyState === WebSocket.OPEN) {
       try {
         send(["CLOSE", subId]);
@@ -124,11 +135,16 @@ function connectRelay(
             }
           }
         }
-        if (msg[0] === "EOSE" && msg[1] === subId) {
-          try {
-            onEose?.();
-          } catch (err) {
-            console.error("[relay] onEose error", err);
+        if (msg[0] === "EOSE") {
+          const eoseSubId = msg[1] as string;
+          if (eoseSubId === subId) {
+            try {
+              onEose?.();
+            } catch (err) {
+              console.error("[relay] onEose error", err);
+            }
+          } else if (dynamicSubIds.has(eoseSubId)) {
+            closeDynamicSub(eoseSubId);
           }
         }
       } catch (_) {}
@@ -144,7 +160,15 @@ function connectRelay(
     close,
     send: (payload: unknown[]) => {
       if (payload[0] === "REQ" && typeof payload[1] === "string") {
-        dynamicSubIds.add(payload[1] as string);
+        const dynId = payload[1] as string;
+        // Evict oldest dynamic sub if at cap
+        if (dynamicSubIds.size >= MAX_DYNAMIC_SUBS) {
+          const oldest = dynamicSubIds.values().next().value;
+          if (oldest) closeDynamicSub(oldest);
+        }
+        dynamicSubIds.add(dynId);
+        // Auto-close after 5s if EOSE hasn't arrived
+        dynamicSubTimeouts.set(dynId, setTimeout(() => closeDynamicSub(dynId), 5000));
       }
       send(payload);
     },
@@ -153,6 +177,8 @@ function connectRelay(
 
 export type ConnectRelaysResult = {
   close: () => void;
+  /** Publish a signed event via existing relay connections (no new WebSockets). */
+  publish: (event: NostrEvent) => void;
   requestProfiles: (pubkeys: string[]) => void;
   requestReplies: (noteIds: string[]) => void;
   /** Fetch notes, profile, and contacts for a specific author. */
@@ -196,6 +222,10 @@ export function connectRelays(
 
   return {
     close: () => handles.forEach((h) => h.close()),
+    publish: (event: NostrEvent) => {
+      const payload = ["EVENT", event];
+      handles.forEach((h) => h.send(payload));
+    },
     requestProfiles: (pubkeys: string[]) => {
       if (pubkeys.length === 0) return;
       const subId = "stegstr-profiles-" + Math.random().toString(36).slice(2, 10);
