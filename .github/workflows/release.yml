@@ -22,7 +22,7 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
-            args: "--target universal-apple-darwin"
+            args: ""
           - platform: ubuntu-22.04
             args: ""
           - platform: windows-latest
@@ -95,7 +95,11 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Stegstr.app"
+          if [[ "${{ matrix.args }}" == *"universal-apple-darwin"* ]]; then
+            APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Stegstr.app"
+          else
+            APP_PATH="src-tauri/target/release/bundle/macos/Stegstr.app"
+          fi
           xcrun notarytool store-credentials "notarytool-profile" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD"
           ditto -c -k --keepParent "$APP_PATH" notarization.zip
           xcrun notarytool submit notarization.zip --keychain-profile "notarytool-profile" --wait
@@ -105,9 +109,14 @@ jobs:
         if: matrix.platform == 'macos-latest'
         shell: bash
         run: |
-          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Stegstr.app"
-          DMG_DIR="src-tauri/target/universal-apple-darwin/release/bundle/dmg"
-          STAGING="src-tauri/target/universal-apple-darwin/release/bundle/dmg-staging"
+          if [[ "${{ matrix.args }}" == *"universal-apple-darwin"* ]]; then
+            BUNDLE_DIR="src-tauri/target/universal-apple-darwin/release/bundle"
+          else
+            BUNDLE_DIR="src-tauri/target/release/bundle"
+          fi
+          APP_PATH="$BUNDLE_DIR/macos/Stegstr.app"
+          DMG_DIR="$BUNDLE_DIR/dmg"
+          STAGING="$BUNDLE_DIR/dmg-staging"
           mkdir -p "$STAGING" "$DMG_DIR"
           cp -R "$APP_PATH" "$STAGING/"
           cp .github/First-time-opening-macos.txt "$STAGING/First time opening.txt"
