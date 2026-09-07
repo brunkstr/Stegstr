@@ -961,6 +961,11 @@ function App({ profile }: { profile: string | null }) {
           Stegstr
         </h1>
         <div className="header-actions">
+          {isWeb() ? (
+            <div className="network-toggle-wrap" title="The web version embeds and detects only. Download the desktop app to post and sync over relays.">
+              <span className="network-off-notice">Web version: embed &amp; detect only — nothing leaves your browser. <a href="https://stegstr.com/downloads.html">Get the app</a> for relays.</span>
+            </div>
+          ) : (
           <div className="network-toggle-wrap">
             <span className="network-label">Network</span>
             <button
@@ -981,6 +986,7 @@ function App({ profile }: { profile: string | null }) {
               </span>
             )}
           </div>
+          )}
           {actingIdentity && (
             <span className="acting-identity" title={`Acting as ${profiles[actingPubkey ?? ""]?.name || actingIdentity.label} (${(actingIdentity.category ?? (actingIdentity.type === "nostr" ? "nostr" : "local")) === "nostr" ? "Nostr" : "Local"})`}>
               as {profiles[actingPubkey ?? ""]?.name || actingIdentity.label} ({(actingIdentity.category ?? (actingIdentity.type === "nostr" ? "nostr" : "local")) === "nostr" ? "Nostr" : "Local"})
