@@ -1,7 +1,8 @@
 /** Extracted verbatim from App.tsx (merge plan step 2). Outer state arrives via `deps`; nothing else changed. */
 import { useState, useCallback, useEffect, type Dispatch, type SetStateAction } from "react";
 import * as Nostr from "../nostr-stub";
-import { isWeb, pickImageFile, decodeStegoFile, encodeStegoToBlob, downloadBlob } from "../platform-web";
+import { isWeb, pickImageFile, encodeStegoToBlob, downloadBlob } from "../platform-web";
+import { decodeAny } from "../codecs/registry";
 import { getDotCapacityForFile } from "../stego-dot-web";
 import { getTauri } from "../platform-desktop";
 import { uint8ArrayToBase64 } from "../utils";
@@ -11,7 +12,7 @@ import type { StegoMethod } from "../EmbedModal";
 import type { IdentityEntry, NostrEvent, NostrStateBundle, ProfileData, View } from "../types";
 import { STEGSTR_BUNDLE_VERSION } from "./storage";
 
-import { decodeQimImageFile, encodeQimImageFile, resizeCoverForPlatform, qimSelfTest, getQimCapacityForFile, PLATFORM_WIDTHS, DEFAULT_PLATFORM } from "../stego-qim";
+import { encodeQimImageFile, resizeCoverForPlatform, qimSelfTest, getQimCapacityForFile, PLATFORM_WIDTHS, DEFAULT_PLATFORM } from "../stego-qim";
 
 export interface StegoDeps {
   profile: string | null;
@@ -95,30 +96,15 @@ export function useStego(deps: StegoDeps) {
       addStegoLog(`Selected: ${file.name} (${file.size} bytes, type: ${file.type})`);
       logger.logAction("detect_started", "Decoding stego image (browser)", { name: file.name });
       try {
-      // Try QIM first for JPEG files, then fall back to Dot
-      let result: { ok: boolean; payload?: string; error?: string } = { ok: false };
-      const isJpeg = file.type === "image/jpeg" || file.name.toLowerCase().endsWith(".jpg") || file.name.toLowerCase().endsWith(".jpeg");
-      if (isJpeg) {
-        setStegoProgress("Trying QIM decode (robust)...");
-        addStegoLog("Trying QIM steganography decode...");
-        try {
-          result = await decodeQimImageFile(file);
-          if (result.ok) {
-            addStegoLog(`QIM decode OK! Payload: ${result.payload?.length ?? 0} chars`);
-          } else {
-            addStegoLog(`QIM decode failed: ${result.error ?? "unknown"}, falling back to Dot...`);
-          }
-        } catch (qimErr) {
-          addStegoLog(`QIM decode error: ${qimErr instanceof Error ? qimErr.message : String(qimErr)}, falling back to Dot...`);
-        }
-      }
-      if (!result.ok) {
-        setStegoProgress("Extracting hidden data (Dot decode)...");
-        addStegoLog("Running Dot steganography decode...");
-        console.log("[App] Starting decodeStegoFile for:", file.name, "size:", file.size);
-        result = await decodeStegoFile(file);
-        console.log("[App] decodeStegoFile result:", result.ok, "error:", result.error, "payloadLen:", result.payload?.length);
-      }
+      // Every registered codec that accepts this file is tried in registry order
+      // (robust JPEG codecs first, the lossless Dot method last). Each codec
+      // verifies its own payload, so a false positive cannot shadow another.
+      setStegoProgress("Extracting hidden data...");
+      const result = await decodeAny(file, (line) => {
+        addStegoLog(line);
+        setStegoProgress(line);
+      });
+      if (result.ok) addStegoLog(`Decoded with ${result.codecId}`);
       if (!result.ok || !result.payload) {
         const err = result.error || "Decode failed";
         addStegoLog(`FAIL: ${err}`);
