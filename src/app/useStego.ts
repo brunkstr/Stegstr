@@ -3,6 +3,7 @@ import { useState, useCallback, useEffect, type Dispatch, type SetStateAction } 
 import * as Nostr from "../nostr-stub";
 import { isWeb, pickImageFile, encodeStegoToBlob, downloadBlob } from "../platform-web";
 import { decodeAny } from "../codecs/registry";
+import { MODES, payloadBytes as stdmPayloadBytes, type ModeName, encodeStdmImageFile, getStdmCapacityForFile, stdmSelfTest } from "../stego-stdm-web";
 import { getDotCapacityForFile } from "../stego-dot-web";
 import { getTauri } from "../platform-desktop";
 import { uint8ArrayToBase64 } from "../utils";
@@ -36,7 +37,8 @@ export function useStego(deps: StegoDeps) {
 
   const [embedModalOpen, setEmbedModalOpen] = useState(false);
 
-  const [embedMethod, setEmbedMethod] = useState<StegoMethod>("qim");
+  const [embedMethod, setEmbedMethod] = useState<StegoMethod>("robust");
+  const [stegoMode, setStegoMode] = useState<ModeName>("standard");
 
   const [targetPlatform, setTargetPlatform] = useState<string>("instagram");
 
@@ -246,11 +248,23 @@ export function useStego(deps: StegoDeps) {
     logger.logAction("detect_started", "Decoding stego image", { path });
     try {
       const isJpeg = /\.jpe?g$/i.test(path);
-      let result: { ok: boolean; payload?: string; error?: string };
-      setStegoProgress("Extracting hidden data (Dot decode)...");
-      addStegoLog("Running Dot steganography decode...");
-      console.log("[Detect] Trying Dot decode first:", path);
-      result = await tauri.invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_dot", { path });
+      let result: { ok: boolean; payload?: string; error?: string } = { ok: false };
+      // TypeScript codecs first (same code as the web build), so images made by
+      // the robust method open on desktop; the Rust decoders remain as fallback.
+      try {
+        setStegoProgress("Extracting hidden data...");
+        const bytes = await tauri.invoke<number[]>("read_bytes", { path });
+        const asFile = new File([new Uint8Array(bytes)], path.replace(/^.*[/\\]/, ""), { type: isJpeg ? "image/jpeg" : "image/png" });
+        const ts = await decodeAny(asFile, (line) => addStegoLog(line));
+        if (ts.ok && ts.payload) result = { ok: true, payload: ts.payload };
+      } catch (e) {
+        addStegoLog(`TypeScript decode unavailable: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (!result.ok) {
+        setStegoProgress("Extracting hidden data (Dot decode)...");
+        addStegoLog("Running Dot steganography decode...");
+        result = await tauri.invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_dot", { path });
+      }
       console.log("[Detect] Dot result: ok=", result.ok, "error=", result.error ?? "(none)");
       if (!result.ok) {
         addStegoLog(`Dot decode failed: ${result.error ?? "unknown error"}`);
@@ -533,6 +547,58 @@ export function useStego(deps: StegoDeps) {
           return encrypted;
         };
 
+        if (embedMethod === "robust") {
+          // ===== ROBUST (STDM) BRANCH — from #71 =====
+          // No pre-resize step: the encoder normalises the image internally,
+          // so the destination platform does not have to be guessed.
+          addStegoLog(`Using robust encoder (mode: ${stegoMode})`);
+          const capacity = await getStdmCapacityForFile(embedCoverFile, stegoMode);
+          addStegoLog(`Capacity: ${capacity.capacityBytes} bytes (${capacity.width}x${capacity.height})`);
+          if (!capacity.usable) {
+            setDecodeError(`Image too small for this mode: shortest edge is ${Math.min(capacity.width, capacity.height)}px, needs ${capacity.minEdge}px`);
+            setEmbedding(false);
+            return;
+          }
+          const encrypted = await encryptAndFit(stdmPayloadBytes(MODES[stegoMode]));
+          if (!encrypted) {
+            setDecodeError("Payload does not fit this mode (try a larger payload mode or fewer events)");
+            setEmbedding(false);
+            return;
+          }
+          setStegoProgress("Embedding data into image...");
+          let blob: Blob;
+          try {
+            blob = await encodeStdmImageFile(embedCoverFile, encrypted, stegoMode);
+            addStegoLog(`Encode complete: ${blob.size} bytes JPEG`);
+          } catch (e) {
+            setDecodeError(`Encode failed: ${e instanceof Error ? e.message : String(e)}`);
+            setEmbedding(false);
+            return;
+          }
+          // Read it back before claiming success, so a silent failure surfaces
+          // here rather than at the recipient.
+          setStegoProgress("Verifying embed integrity (self-test)...");
+          const selfTestResult = await stdmSelfTest(blob, encrypted, stegoMode);
+          if (!selfTestResult.ok) {
+            addStegoLog(`Self-test FAILED: ${selfTestResult.error}`);
+            setDecodeError(`Embed verification failed: ${selfTestResult.error}`);
+            setEmbedding(false);
+            return;
+          }
+          addStegoLog("Self-test PASSED - payload reads back byte for byte.");
+          const name = embedCoverFile.name.replace(/\.[^.]+$/, "") || "image";
+          setStegoProgress("Downloading embedded image...");
+          downloadBlob(blob, `${name}-stegstr.jpg`);
+          addStegoLog("SUCCESS - Download started!");
+          setEmbedModalOpen(false);
+          setEmbedCoverFile(null);
+          setEmbedding(false);
+          setStegoProgress("");
+          setStatus("Image downloaded. Save it from your Downloads folder.");
+          logger.logAction("embed_completed", "Robust embed saved (browser download)", { eventCount: events.length, mode: stegoMode });
+          return;
+        }
+
         if (embedMethod === "qim") {
           // ===== QIM BRANCH =====
           addStegoLog(`Using QIM method (target platform: ${targetPlatform})`);
@@ -643,14 +709,15 @@ export function useStego(deps: StegoDeps) {
       // and doesn't paint visible pixel artifacts into the image, unlike Dot
       // (PNG, spatial-domain) -- default to it, matching the web build's default.
       const useQim = embedMethod === "qim";
-      const ext = useQim ? "jpg" : "png";
+      const useRobust = embedMethod === "robust";
+      const ext = useQim || useRobust ? "jpg" : "png";
       let defaultPath = `${coverName}.${ext}`;
       try {
         const desktop = await tauri.invoke<string>("get_desktop_path");
         if (desktop) defaultPath = `${desktop}/${coverName}.${ext}`;
       } catch (_) {}
       const outputPath = await tauri.saveDialog({
-        filters: [{ name: useQim ? "JPEG" : "PNG", extensions: [ext] }],
+        filters: [{ name: ext === "jpg" ? "JPEG" : "PNG", extensions: [ext] }],
         defaultPath,
       });
       if (!outputPath) {
@@ -660,8 +727,13 @@ export function useStego(deps: StegoDeps) {
       const finalOutputPath = outputPath.endsWith(`.${ext}`) ? outputPath : outputPath + `.${ext}`;
       let maxPayloadBytes = 0;
       try {
-        maxPayloadBytes = await tauri.invoke<number>(useQim ? "get_qim_capacity" : "get_dot_capacity", { path: coverPath });
-        addStegoLog(`${useQim ? "QIM" : "Dot"} capacity: ${maxPayloadBytes} bytes`);
+        if (useRobust) {
+          maxPayloadBytes = stdmPayloadBytes(MODES[stegoMode]);
+          addStegoLog(`Robust capacity (${stegoMode} mode): ${maxPayloadBytes} bytes`);
+        } else {
+          maxPayloadBytes = await tauri.invoke<number>(useQim ? "get_qim_capacity" : "get_dot_capacity", { path: coverPath });
+          addStegoLog(`${useQim ? "QIM" : "Dot"} capacity: ${maxPayloadBytes} bytes`);
+        }
       } catch (e) {
         addStegoLog(`Capacity check failed: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -709,6 +781,36 @@ export function useStego(deps: StegoDeps) {
       if (trimmedEvents.length < events.length) {
         addStegoLog(`Trimmed events: kept ${trimmedEvents.length}/${events.length} to fit capacity`);
       }
+      if (useRobust) {
+        // Desktop robust path runs the same TypeScript codec as the web build
+        // (merge plan D2): read the cover through the app, encode in the webview,
+        // write the result where the user chose.
+        setStegoProgress("Embedding data into image (robust)...");
+        const coverBytes = await tauri.invoke<number[]>("read_bytes", { path: coverPath });
+        const coverFile = new File([new Uint8Array(coverBytes)], coverPath.replace(/^.*[/\\]/, ""), { type: "image/jpeg" });
+        const capacity = await getStdmCapacityForFile(coverFile, stegoMode);
+        if (!capacity.usable) {
+          setDecodeError(`Image too small for this mode: shortest edge is ${Math.min(capacity.width, capacity.height)}px, needs ${capacity.minEdge}px`);
+          return;
+        }
+        const blob = await encodeStdmImageFile(coverFile, payloadBytes, stegoMode);
+        setStegoProgress("Verifying embed integrity (self-test)...");
+        const check = await stdmSelfTest(blob, payloadBytes, stegoMode);
+        if (!check.ok) {
+          setDecodeError(`Embed verification failed: ${check.error}`);
+          return;
+        }
+        addStegoLog("Self-test PASSED - payload reads back byte for byte.");
+        const savedPath = await tauri.invoke<string>("write_bytes", { path: finalOutputPath, data: Array.from(new Uint8Array(await blob.arrayBuffer())) });
+        setEmbedModalOpen(false);
+        addStegoLog(`Saved to: ${savedPath}`);
+        setStatus(`Saved to ${savedPath}. Finder opened.`);
+        logger.logAction("embed_completed", "Robust embed saved", { path: savedPath, eventCount: events.length, mode: stegoMode });
+        try {
+          await tauri.invoke("reveal_in_finder", { path: savedPath });
+        } catch (_) {}
+        return;
+      }
       const payloadToEmbed = "base64:" + uint8ArrayToBase64(payloadBytes);
       setStegoProgress(useQim ? "Embedding with QIM (JPEG, survives recompression)..." : "Embedding with Dot (offset, robust)...");
       const cmd = useQim ? "encode_stego_qim" : "encode_stego_dot";
@@ -748,7 +850,7 @@ export function useStego(deps: StegoDeps) {
       setEmbedding(false);
       setStegoProgress("");
     }
-  }, [embedModalOpen, embedCoverFile, events, profiles, identities, addStegoLog, embedRecipientMode, embedRecipients, effectivePrivKey, embedMethod, targetPlatform]);
+  }, [embedModalOpen, embedCoverFile, events, profiles, identities, addStegoLog, embedRecipientMode, embedRecipients, effectivePrivKey, embedMethod, targetPlatform, stegoMode]);
 
   useEffect(() => {
     if (isWeb()) return;
@@ -764,5 +866,5 @@ export function useStego(deps: StegoDeps) {
     return () => { unlisten?.(); };
   }, [handleLoadFromImage]);
 
-  return { addStegoLog, decodeError, detecting, dragOverStego, embedCoverFile, embedMethod, embedModalOpen, embedRecipientInput, embedRecipientMode, embedRecipients, embedding, handleDetectFromExchange, handleEmbedConfirm, handleEmbedToExchange, handleLoadFromImage, handleSaveToImage, importedEventIds, setDecodeError, setDetecting, setDragOverStego, setEmbedCoverFile, setEmbedMethod, setEmbedModalOpen, setEmbedRecipientInput, setEmbedRecipientMode, setEmbedRecipients, setEmbedding, setImportedEventIds, setStegoLogs, setStegoProgress, setTargetPlatform, stegoLogs, stegoProgress, targetPlatform };
+  return { addStegoLog, decodeError, stegoMode, setStegoMode, detecting, dragOverStego, embedCoverFile, embedMethod, embedModalOpen, embedRecipientInput, embedRecipientMode, embedRecipients, embedding, handleDetectFromExchange, handleEmbedConfirm, handleEmbedToExchange, handleLoadFromImage, handleSaveToImage, importedEventIds, setDecodeError, setDetecting, setDragOverStego, setEmbedCoverFile, setEmbedMethod, setEmbedModalOpen, setEmbedRecipientInput, setEmbedRecipientMode, setEmbedRecipients, setEmbedding, setImportedEventIds, setStegoLogs, setStegoProgress, setTargetPlatform, stegoLogs, stegoProgress, targetPlatform };
 }

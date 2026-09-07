@@ -7,10 +7,12 @@
  * cannot shadow another.
  */
 import type { Codec, CodecDecodeResult, CodecId } from "./types";
+import { stdmCodec } from "./stdm";
 import { qimCodec } from "./qim";
 import { dotCodec } from "./dot";
 
-const codecs: Codec[] = [qimCodec, dotCodec];
+// Decode order: newest robust format first, then the fixed-grid QIM, then the lossless Dot catch-all.
+const codecs: Codec[] = [stdmCodec, qimCodec, dotCodec];
 
 /** Codecs in decode order. */
 export function listCodecs(): readonly Codec[] {

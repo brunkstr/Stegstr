@@ -17,7 +17,13 @@
     "launch:both": "./scripts/launch-both-profiles.sh",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "node tests/e2e/run-permutations.mjs"
+    "test:e2e": "node tests/e2e/run-permutations.mjs",
+    "build:cli": "esbuild cli/stegstr.ts --bundle --platform=node --format=esm --target=node18 --outfile=dist-cli/stegstr.mjs --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
+    "cli": "tsx cli/stegstr.ts",
+    "test:browser": "npm run build && node tests/browser-smoke.mjs",
+    "test:hostile": "node tests/hostile-inputs.mjs && node tests/image-sizes.mjs",
+    "testkit": "tsx testkit/make-kit.mjs",
+    "testkit:verify": "tsx testkit/verify.mjs"
   },
   "dependencies": {
     "@noble/hashes": "^2.0.1",
@@ -28,7 +34,9 @@
     "bech32": "^2.0.0",
     "pako": "^2.1.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
@@ -43,6 +51,9 @@
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
     "vitest": "^4.0.18",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "@types/pngjs": "^6.0.5",
+    "playwright": "^1.62.1",
+    "tsx": "^4.23.12"
   }
 }

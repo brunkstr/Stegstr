@@ -254,7 +254,7 @@ function App({ profile }: { profile: string | null }) {
 
   // ---- extracted feature hooks (merge plan step 2) ----
   const { newRelayUrl, publishViaRelay, relayRef, relayStatus, relayUrls, setNewRelayUrl, setRelayUrls } = useRelayConnection({ contacts, networkEnabled, profile, selfPubkeys, setEvents, setProfiles, toast, viewingPubkeys, viewingPubkeysKey });
-  const { decodeError, detecting, dragOverStego, embedCoverFile, embedMethod, embedModalOpen, embedRecipientInput, embedRecipientMode, embedRecipients, embedding, handleDetectFromExchange, handleEmbedConfirm, handleEmbedToExchange, handleLoadFromImage, handleSaveToImage, importedEventIds, setDecodeError, setDragOverStego, setEmbedCoverFile, setEmbedMethod, setEmbedModalOpen, setEmbedRecipientInput, setEmbedRecipientMode, setEmbedRecipients, setTargetPlatform, stegoLogs, stegoProgress, targetPlatform } = useStego({ effectivePrivKey, events, identities, profile, profiles, setEvents, setFeedFilter, setProfiles, setSearchQuery, setStatus, setView, viewingPubkeys });
+  const { decodeError, detecting, dragOverStego, embedCoverFile, embedMethod, embedModalOpen, embedRecipientInput, embedRecipientMode, embedRecipients, embedding, handleDetectFromExchange, handleEmbedConfirm, handleEmbedToExchange, handleLoadFromImage, handleSaveToImage, importedEventIds, setDecodeError, setDragOverStego, setEmbedCoverFile, setEmbedMethod, setEmbedModalOpen, setEmbedRecipientInput, setEmbedRecipientMode, setEmbedRecipients, setTargetPlatform, stegoLogs, stegoProgress, targetPlatform, stegoMode, setStegoMode } = useStego({ effectivePrivKey, events, identities, profile, profiles, setEvents, setFeedFilter, setProfiles, setSearchQuery, setStatus, setView, viewingPubkeys });
   const dmEvents = events.filter(
     (e) =>
       e.kind === 4 &&
@@ -1384,6 +1384,8 @@ function App({ profile }: { profile: string | null }) {
           onStegoMethodChange={setEmbedMethod}
           targetPlatform={targetPlatform}
           onTargetPlatformChange={setTargetPlatform}
+          stegoMode={stegoMode}
+          onStegoModeChange={setStegoMode}
         />
       )}
 
