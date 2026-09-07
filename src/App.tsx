@@ -15,6 +15,7 @@ import {
   DEFAULT_PLATFORM,
 } from "./stego-qim";
 import { uploadMedia } from "./upload";
+import { confirmDialog } from "./confirm";
 import { ensureStegstrSuffix } from "./constants";
 import * as stegoCrypto from "./stego-crypto";
 import * as logger from "./logger";
@@ -1923,6 +1924,11 @@ function App({ profile }: { profile: string | null }) {
   const handleDelete = useCallback(
     async (note: NostrEvent) => {
       if (!selfPubkeys.includes(note.pubkey)) return;
+      const preview = note.content.length > 60 ? note.content.slice(0, 60) + "…" : note.content;
+      const warning = networkEnabled && canPublishToNetwork
+        ? "A deletion request will be published to relays; relays and other clients may still keep copies."
+        : "It will be removed from this device.";
+      if (!(await confirmDialog(`Delete this note?\n\n"${preview}"\n\n${warning}`))) return;
       const identityForNote = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === note.pubkey);
       const privToUse = identityForNote?.privKeyHex ?? effectivePrivKey;
       try {
@@ -2729,6 +2735,7 @@ function App({ profile }: { profile: string | null }) {
           onEditAboutChange={setEditAbout}
           editPicture={editPicture}
           onEditPictureChange={setEditPicture}
+          onError={(msg) => { setStatus(msg); toast.error(msg); }}
           editBanner={editBanner}
           onEditBannerChange={setEditBanner}
         />

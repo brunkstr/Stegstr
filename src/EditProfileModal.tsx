@@ -10,8 +10,19 @@ export interface EditProfileModalProps {
   onEditAboutChange: (value: string) => void;
   editPicture: string;
   onEditPictureChange: (value: string) => void;
+  /** Called with a human-readable message when an upload fails. Without it, failures would be silent. */
+  onError?: (message: string) => void;
   editBanner: string;
   onEditBannerChange: (value: string) => void;
+}
+
+/** One clear sentence about why an upload failed and what to do instead. */
+export function uploadFailureMessage(what: string, err: unknown): string {
+  const detail = err instanceof Error ? err.message : String(err);
+  const hint = /401|nip-98|unauthori[sz]ed/i.test(detail)
+    ? "The image host now requires signed (NIP-98) uploads, which this version does not send yet."
+    : "Check your connection and try again.";
+  return `${what} upload failed. ${hint} You can paste an image URL instead. (${detail.slice(0, 160)})`;
 }
 
 export function EditProfileModal({
@@ -23,6 +34,7 @@ export function EditProfileModal({
   onEditAboutChange,
   editPicture,
   onEditPictureChange,
+  onError,
   editBanner,
   onEditBannerChange,
 }: EditProfileModalProps) {
@@ -35,7 +47,11 @@ export function EditProfileModal({
     try {
       const url = await uploadMedia(file);
       if (url) onEditPictureChange(url);
-    } catch (_) {}
+    } catch (err) {
+      onError?.(uploadFailureMessage("Profile picture", err));
+    } finally {
+      e.target.value = "";
+    }
   };
 
   const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -44,7 +60,11 @@ export function EditProfileModal({
     try {
       const url = await uploadMedia(file);
       if (url) onEditBannerChange(url);
-    } catch (_) {}
+    } catch (err) {
+      onError?.(uploadFailureMessage("Banner", err));
+    } finally {
+      e.target.value = "";
+    }
   };
 
   return (
