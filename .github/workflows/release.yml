@@ -126,9 +126,9 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ matrix.args }}" == *"universal-apple-darwin"* ]]; then
-            echo "path=src-tauri/target/universal-apple-darwin/release/bundle" >> $GITHUB_OUTPUT
+            echo "path=src-tauri/target/universal-apple-darwin/release/bundle" >> "$GITHUB_OUTPUT"
           else
-            echo "path=src-tauri/target/release/bundle" >> $GITHUB_OUTPUT
+            echo "path=src-tauri/target/release/bundle" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload artifacts
@@ -174,7 +174,8 @@ jobs:
         shell: bash
         working-directory: release-assets
         run: |
-          sha256sum * > SHA256SUMS.txt
+          sha256sum -- * > ../SHA256SUMS.txt
+          mv ../SHA256SUMS.txt .
           cat SHA256SUMS.txt
 
       - name: Create release
