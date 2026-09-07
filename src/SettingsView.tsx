@@ -1,3 +1,4 @@
+import { useState } from "react";
 import * as Nostr from "./nostr-stub";
 import type { IdentityEntry, ProfileData } from "./types";
 
@@ -16,13 +17,28 @@ export interface SettingsViewProps {
   setMutedWords: React.Dispatch<React.SetStateAction<string[]>>;
   resolvePubkeyFromInput: (input: string) => string | null;
   onStatus: (msg: string) => void;
+  /** Publicity-contest referral code currently stored (null when none or expired). */
+  referralCode: string | null;
+  /** Store a new code (any form: bare, URL) or clear it with null. Returns the canonical code or null. */
+  setReferralCode: (input: string | null) => string | null;
 }
 
 export function SettingsView({
   identities, profiles, relayUrls, setRelayUrls, newRelayUrl, setNewRelayUrl,
   muteInput, setMuteInput, mutedPubkeys, setMutedPubkeys, mutedWords, setMutedWords,
-  resolvePubkeyFromInput, onStatus,
+  resolvePubkeyFromInput, onStatus, referralCode, setReferralCode,
 }: SettingsViewProps) {
+  const [referralInput, setReferralInput] = useState("");
+  const handleSaveReferral = () => {
+    if (!referralInput.trim()) return;
+    const code = setReferralCode(referralInput);
+    if (code) {
+      setReferralInput("");
+      onStatus(`Referral code ${code} saved.`);
+    } else {
+      onStatus("That is not a valid referral code (4-8 letters/digits, no 0, O, 1, I or L).");
+    }
+  };
   const handleAddRelay = () => {
     if (newRelayUrl.trim()) {
       const url = newRelayUrl.trim().toLowerCase();
@@ -83,6 +99,29 @@ export function SettingsView({
           );
         })}
       </ul>
+      <h3 className="settings-section">
+        Referral code
+        <span className="info-icon" tabIndex={0} data-tooltip="If someone invited you to Stegstr with a link or QR code, enter their code here so their invitation counts in the publicity contest.">ⓘ</span>
+      </h3>
+      <p className="muted">
+        {referralCode
+          ? <>Your profile and notes carry referral code <code>{referralCode}</code> for 30 days. Nothing else is shared.</>
+          : <>Came here through someone's stegstr.com/r/… link or QR code? Enter their code so it counts for them. Optional.</>}
+      </p>
+      <div className="mute-add-wrap">
+        <input
+          type="text"
+          value={referralInput}
+          onChange={(e) => setReferralInput(e.target.value)}
+          placeholder={referralCode ? "Replace code" : "Code or link, e.g. K7M2QX"}
+          aria-label="Referral code"
+          onKeyDown={(e) => { if (e.key === "Enter" && referralInput.trim()) handleSaveReferral(); }}
+        />
+        <button type="button" className="btn-secondary" onClick={handleSaveReferral} disabled={!referralInput.trim()}>Save</button>
+        {referralCode && (
+          <button type="button" className="btn-delete muted" onClick={() => { setReferralCode(null); onStatus("Referral code removed."); }}>Remove</button>
+        )}
+      </div>
       <h3 className="settings-section">
         Relays
         <span className="info-icon" tabIndex={0} data-tooltip="Relays are Nostr servers that store and deliver events. Add your favorites here.">ⓘ</span>

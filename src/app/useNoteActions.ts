@@ -6,6 +6,7 @@ import { ensureStegstrSuffix } from "../constants";
 import * as logger from "../logger";
 import type { IdentityEntry, NostrEvent } from "../types";
 import { BASE_ZAP_QUEUE, getStorageKey, loadQueuedZaps } from "./storage";
+import { withReferralTag } from "./referral";
 import type { QueuedZap } from "./storage";
 
 export interface NoteActionsDeps {
@@ -175,7 +176,7 @@ export function useNoteActions(deps: NoteActionsDeps) {
       const rootId = getRootId(replyingTo);
       try {
         const sk = Nostr.hexToBytes(effectivePrivKey);
-        const tags: string[][] = [["e", rootId], ["e", replyingTo.id], ["p", replyingTo.pubkey]];
+        const tags: string[][] = withReferralTag([["e", rootId], ["e", replyingTo.id], ["p", replyingTo.pubkey]]);
         const ev = await Nostr.finishEventAsync(
           {
             kind: 1,

@@ -1,0 +1,2 @@
+# code<TAB>participant (display name or handle). One per line. Codes: 4-8 chars, A-Z minus I/L/O, digits 2-9.
+# Mint a new one with:  ./newcode.sh "Name"

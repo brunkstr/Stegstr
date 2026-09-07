@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import * as Nostr from "./nostr-stub";
 import { isWeb } from "./platform-web";
+import { getActiveReferralCode, setReferralCode as storeReferralCode } from "./app/referral";
+import { withReferralTag } from "./app/referral";
 import { getTauri } from "./platform-desktop";
 import { ensureStegstrSuffix } from "./constants";
 import * as logger from "./logger";
@@ -254,6 +256,14 @@ function App({ profile }: { profile: string | null }) {
 
   // ---- extracted feature hooks (merge plan step 2) ----
   const { newRelayUrl, publishViaRelay, relayRef, relayStatus, relayUrls, setNewRelayUrl, setRelayUrls } = useRelayConnection({ contacts, networkEnabled, profile, selfPubkeys, setEvents, setProfiles, toast, viewingPubkeys, viewingPubkeysKey });
+  // Publicity-contest referral code (see src/app/referral.ts). State mirrors localStorage
+  // so Settings re-renders when it changes; the tag itself is read from storage at publish time.
+  const [referralCode, setReferralCodeState] = useState<string | null>(() => getActiveReferralCode());
+  const setReferralCode = useCallback((input: string | null) => {
+    const code = storeReferralCode(input);
+    setReferralCodeState(getActiveReferralCode());
+    return code;
+  }, []);
   const { decodeError, detecting, dragOverStego, embedCoverFile, embedMethod, embedModalOpen, embedRecipientInput, embedRecipientMode, embedRecipients, embedding, handleDetectFromExchange, handleEmbedConfirm, handleEmbedToExchange, handleLoadFromImage, handleSaveToImage, importedEventIds, setDecodeError, setDragOverStego, setEmbedCoverFile, setEmbedMethod, setEmbedModalOpen, setEmbedRecipientInput, setEmbedRecipientMode, setEmbedRecipients, setTargetPlatform, stegoLogs, stegoProgress, targetPlatform, stegoMode, setStegoMode } = useStego({ effectivePrivKey, events, identities, profile, profiles, setEvents, setFeedFilter, setProfiles, setSearchQuery, setStatus, setView, viewingPubkeys });
   const dmEvents = events.filter(
     (e) =>
@@ -817,7 +827,7 @@ function App({ profile }: { profile: string | null }) {
     if (!textPart && !postMediaUrls.length) return;
     const sk = Nostr.hexToBytes(effectivePrivKey);
     const content = ensureStegstrSuffix((textPart || " ") + mediaPart);
-    const tags: string[][] = postMediaUrls.flatMap((url) => [["im", url]]);
+    const tags: string[][] = withReferralTag(postMediaUrls.flatMap((url) => [["im", url]]));
     const ev = await Nostr.finishEventAsync(
       {
         kind: 1,
@@ -1269,6 +1279,8 @@ function App({ profile }: { profile: string | null }) {
               setMutedWords={setMutedWords}
               resolvePubkeyFromInput={resolvePubkeyFromInput}
               onStatus={setStatus}
+              referralCode={referralCode}
+              setReferralCode={setReferralCode}
             />
           )}
         </div>
