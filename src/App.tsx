@@ -1397,6 +1397,7 @@ function App({ profile }: { profile: string | null }) {
           onEditAboutChange={setEditAbout}
           editPicture={editPicture}
           onEditPictureChange={setEditPicture}
+          privKeyHex={effectivePrivKey}
           onError={(msg) => { setStatus(msg); toast.error(msg); }}
           editBanner={editBanner}
           onEditBannerChange={setEditBanner}

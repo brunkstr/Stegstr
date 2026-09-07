@@ -13,7 +13,9 @@ export const STEGSTR_CONFIG_URL = "https://www.stegstr.com/config/relay.json";
 export const STEGSTR_CONFIG_URL_PHP = "https://www.stegstr.com/config/relay.php";
 
 /** Default relay list when config fetch fails (direct Nostr relays). */
+/** Built-in fallback when stegstr.com/config/relay.json is unreachable. The Stegstr relay comes first by design: it is the default home for app traffic; the public relays are secondaries. */
 export const DEFAULT_RELAYS = [
+  "wss://relay.stegstr.com",
   "wss://relay.primal.net",
   "wss://relay.damus.io",
   "wss://nos.lol",
