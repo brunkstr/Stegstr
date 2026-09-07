@@ -44,7 +44,9 @@ export function useRelayConnection(deps: RelayConnectionDeps) {
   const relayUrlsKey = useMemo(() => relayUrls.join(","), [relayUrls]);
 
   const publishViaRelay = useCallback((ev: NostrEvent) => {
-    const confirmed = relayRef.current ? relayRef.current.publish(ev) : publishEvent(ev, relayUrls);
+    const confirmed = relayRef.current
+      ? relayRef.current.publish(ev)
+      : publishEvent(ev, relayUrls).then((results) => results.filter((r) => r.ok).length);
     const total = relayUrls.length;
     confirmed
       .then((count) => {
@@ -90,6 +92,7 @@ export function useRelayConnection(deps: RelayConnectionDeps) {
     }
     setRelayStatus("Connecting…");
     eventBufferRef.current = [];
+    let everSynced = false;
     relayRef.current = connectRelays(
       authors,
       (ev) => {
@@ -110,7 +113,13 @@ export function useRelayConnection(deps: RelayConnectionDeps) {
       () => setRelayStatus("Synced"),
       (err) => setRelayStatus("Error: " + (err instanceof Error ? err.message : String(err))),
       relayUrls,
-      () => setRelayStatus("Reconnecting…")
+      (_url, state) => {
+        // Per-relay state from the pool. After the initial sync, a relay going
+        // back to "connecting" means a drop is being recovered; say so instead of
+        // leaving a stale "Synced".
+        if (state === "connecting" && everSynced) setRelayStatus("Reconnecting…");
+        if (state === "synced" || state === "open") everSynced = true;
+      }
     );
     const flush = () => {
       const batch = eventBufferRef.current;
