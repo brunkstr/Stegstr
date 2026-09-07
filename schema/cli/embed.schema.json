@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/embed.schema.json",
+  "title": "stegstr-cli embed --json",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["ok", "encoder", "output_path", "output_bytes", "encrypted"],
+      "additionalProperties": false,
+      "properties": {
+        "ok": { "const": true },
+        "encoder": { "type": "string", "enum": ["dwt", "qim"] },
+        "output_path": { "type": "string" },
+        "output_bytes": { "type": "integer", "minimum": 0 },
+        "encrypted": { "type": "boolean" }
+      }
+    },
+    { "$ref": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/error.schema.json" }
+  ]
+}

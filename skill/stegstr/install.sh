@@ -2,7 +2,7 @@
 # Install stegstr-cli from source. Requires Rust (rustup) and git.
 set -e
 
-REPO_URL="${STEGSTR_REPO_URL:-https://github.com/brunkstr/Stegstr.git}"
+REPO_URL="${STEGSTR_REPO_URL:-https://github.com/akifjanjua/Stegstr.git}"
 INSTALL_DIR="${STEGSTR_INSTALL_DIR:-$HOME/.local/stegstr}"
 BIN_DIR="${STEGSTR_BIN_DIR:-$HOME/.local/bin}"
 
@@ -27,4 +27,5 @@ echo "Usage:"
 echo "  stegstr-cli decode image.png"
 echo "  stegstr-cli detect image.png"
 echo "  stegstr-cli embed cover.png -o out.png --payload @bundle.json --encrypt"
+echo "  stegstr-cli embed cover.jpg -o out.jpg --payload @bundle.json --encrypt --robust  # survives WhatsApp/Instagram/Telegram"
 echo "  stegstr-cli post \"message\" --output bundle.json"

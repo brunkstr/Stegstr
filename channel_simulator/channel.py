@@ -15,7 +15,7 @@ from typing import Literal
 
 from PIL import Image, ImageOps
 
-ProfileName = Literal["whatsapp", "instagram", "facebook", "twitter"]
+ProfileName = Literal["whatsapp", "instagram", "facebook", "twitter", "telegram"]
 
 
 @dataclass
@@ -26,6 +26,7 @@ class ChannelProfile:
     jpeg_quality: int
     subsampling: int = 2  # 4:2:0 = 2 in Pillow
     resize_method: str = "LANCZOS"  # LANCZOS, BICUBIC, BILINEAR
+    double_pass: bool = False  # re-run the pipeline twice (simulates forward/re-share)
 
 
 PROFILES: dict[ProfileName, ChannelProfile] = {
@@ -33,15 +34,24 @@ PROFILES: dict[ProfileName, ChannelProfile] = {
     "instagram": ChannelProfile(max_width=1080, jpeg_quality=82),
     "facebook": ChannelProfile(max_width=2048, jpeg_quality=77),
     "twitter": ChannelProfile(max_width=600, jpeg_quality=82),
+    # Telegram "compress" mode (default when sending as Photo, not File/Document)
+    "telegram": ChannelProfile(max_width=1280, jpeg_quality=87),
 }
 
 
 def _resize_to_max_dim(img: Image.Image, max_width: int, method: str) -> Image.Image:
+    """Constrain by the LONGER side, matching real platforms (they cap the long
+    edge, not literally the width) -- a narrow-but-tall image (e.g. a cropped
+    screenshot) would otherwise never trigger a resize here even though every
+    real platform would still shrink it, silently understating how aggressive
+    real-world resizing is for portrait-oriented images.
+    """
     w, h = img.size
-    if w <= max_width:
+    long_side = max(w, h)
+    if long_side <= max_width:
         return img
-    ratio = max_width / w
-    new_w = max_width
+    ratio = max_width / long_side
+    new_w = max(1, round(w * ratio))
     new_h = max(1, round(h * ratio))
     resample = getattr(Image.Resampling, method, Image.Resampling.LANCZOS)
     return img.resize((new_w, new_h), resample=resample)
@@ -108,3 +118,34 @@ def simulate(
         Path(output_path).write_bytes(jpeg_bytes)
 
     return jpeg_bytes
+
+
+def simulate_chain(
+    input_path: str | Path,
+    profile_names: list[ProfileName],
+    output_path: str | Path | None = None,
+) -> bytes:
+    """
+    Simulate an image being re-shared through multiple platforms in sequence
+    (e.g. embedded -> sent via Telegram -> forwarded via WhatsApp). Each hop
+    re-decodes the previous hop's JPEG and re-applies resize + re-encode, which
+    is strictly harsher than any single hop (repeated generation loss).
+    """
+    import tempfile
+
+    current = Path(input_path)
+    tmp_files: list[Path] = []
+    try:
+        for i, name in enumerate(profile_names):
+            is_last = i == len(profile_names) - 1
+            dest = Path(output_path) if (is_last and output_path is not None) else Path(
+                tempfile.mktemp(suffix=".jpg")
+            )
+            if not is_last:
+                tmp_files.append(dest)
+            simulate(current, name, output_path=dest)
+            current = dest
+        return current.read_bytes()
+    finally:
+        for f in tmp_files:
+            f.unlink(missing_ok=True)

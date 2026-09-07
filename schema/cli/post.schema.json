@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/post.schema.json",
+  "title": "stegstr-cli post --json",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["ok", "bundle", "output_path"],
+      "additionalProperties": false,
+      "properties": {
+        "ok": { "const": true },
+        "bundle": {
+          "description": "The created Nostr bundle. See schema/bundle.schema.json for its shape.",
+          "type": "object"
+        },
+        "output_path": {
+          "description": "The path bundle JSON was also written to, or null if --output wasn't passed (the bundle is only in this response's 'bundle' field in that case).",
+          "type": ["string", "null"]
+        }
+      }
+    },
+    { "$ref": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/error.schema.json" }
+  ]
+}

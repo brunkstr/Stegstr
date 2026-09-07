@@ -637,12 +637,25 @@ function App({ profile }: { profile: string | null }) {
     .sort((a, b) => b.sortAt - a.sortAt);
 
   const publishViaRelay = useCallback((ev: NostrEvent) => {
-    if (relayRef.current) {
-      relayRef.current.publish(ev);
-    } else {
-      publishEvent(ev, relayUrls);
-    }
-  }, [relayUrls]);
+    const confirmed = relayRef.current ? relayRef.current.publish(ev) : publishEvent(ev, relayUrls);
+    const total = relayUrls.length;
+    confirmed
+      .then((count) => {
+        if (count === 0) {
+          toast.error("Could not reach any relay -- this post/message may not have sent. Check your connection and try again.");
+        } else if (total > 0 && count < total) {
+          // A socket accepting a write is not a delivery guarantee -- only
+          // report success for the relays that actually sent back NIP-01 OK.
+          // Silently treating "1 of 5 relays confirmed" the same as "5 of 5"
+          // hides real delivery risk (the other 4 relays' subscribers may
+          // never see this note) behind a UI that looks identical either way.
+          toast.info(`Reached ${count} of ${total} relays -- some may not have received this.`);
+        }
+      })
+      .catch(() => {
+        toast.error("Failed to publish to relays.");
+      });
+  }, [relayUrls, toast]);
 
   useEffect(() => {
     const authors = Array.from(viewingPubkeys).filter((pk) => pk && /^[a-fA-F0-9]{64}$/.test(pk));
@@ -674,7 +687,8 @@ function App({ profile }: { profile: string | null }) {
       },
       () => setRelayStatus("Synced"),
       (err) => setRelayStatus("Error: " + (err instanceof Error ? err.message : String(err))),
-      relayUrls
+      relayUrls,
+      () => setRelayStatus("Reconnecting…")
     );
     const flush = () => {
       const batch = eventBufferRef.current;
@@ -1422,12 +1436,12 @@ function App({ profile }: { profile: string | null }) {
     if (isWeb()) return;
     try {
       const tauri = await getTauri();
-      const path = await tauri.invoke<string>("get_exchange_path");
+      const path = await tauri.invoke<string>(embedMethod === "qim" ? "get_exchange_path_qim" : "get_exchange_path");
       handleLoadFromImage(path);
     } catch (e) {
       setDecodeError(e instanceof Error ? e.message : String(e));
     }
-  }, [handleLoadFromImage]);
+  }, [handleLoadFromImage, embedMethod]);
 
   const handleEmbedToExchange = useCallback(async () => {
     if (isWeb() || !profile) return;
@@ -1444,23 +1458,26 @@ function App({ profile }: { profile: string | null }) {
         setDetecting(false);
         return;
       }
-      const outputPath = await tauri.invoke<string>("get_exchange_path");
+      const useQim = embedMethod === "qim";
+      const outputPath = await tauri.invoke<string>(useQim ? "get_exchange_path_qim" : "get_exchange_path");
       const bundle: NostrStateBundle = { version: STEGSTR_BUNDLE_VERSION, events };
       const jsonString = JSON.stringify(bundle);
       const encrypted = await stegoCrypto.encryptOpen(jsonString);
       const payloadToEmbed = "base64:" + uint8ArrayToBase64(encrypted);
-      const cmd = "encode_stego_dot";
+      const cmd = useQim ? "encode_stego_qim" : "encode_stego_dot";
       const result = await tauri.invoke<{ ok: boolean; path?: string; error?: string }>(cmd, {
         coverPath,
         outputPath,
         payload: payloadToEmbed,
       });
       if (result.ok && result.path) {
-        try {
-          const isPng = await tauri.invoke<boolean>("check_png_signature", { path: result.path });
-          addStegoLog(`PNG signature check: ${isPng ? "OK" : "FAIL"}`);
-        } catch (e) {
-          addStegoLog(`PNG signature check error: ${e instanceof Error ? e.message : String(e)}`);
+        if (!useQim) {
+          try {
+            const isPng = await tauri.invoke<boolean>("check_png_signature", { path: result.path });
+            addStegoLog(`PNG signature check: ${isPng ? "OK" : "FAIL"}`);
+          } catch (e) {
+            addStegoLog(`PNG signature check error: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
         addStegoLog(`Saved to: ${result.path}`);
         setStatus(`Saved to exchange. B can click Detect from exchange.`);
@@ -1670,14 +1687,18 @@ function App({ profile }: { profile: string | null }) {
         return;
       }
       const coverName = coverPath.replace(/^.*[/\\]/, "").replace(/\.[^.]+$/, "") || "image";
-      const ext = "png";
+      // QIM (JPEG, DCT-domain) survives WhatsApp/Instagram/Telegram recompression
+      // and doesn't paint visible pixel artifacts into the image, unlike Dot
+      // (PNG, spatial-domain) -- default to it, matching the web build's default.
+      const useQim = embedMethod === "qim";
+      const ext = useQim ? "jpg" : "png";
       let defaultPath = `${coverName}.${ext}`;
       try {
         const desktop = await tauri.invoke<string>("get_desktop_path");
         if (desktop) defaultPath = `${desktop}/${coverName}.${ext}`;
       } catch (_) {}
       const outputPath = await tauri.saveDialog({
-        filters: [{ name: "PNG", extensions: [ext] }],
+        filters: [{ name: useQim ? "JPEG" : "PNG", extensions: [ext] }],
         defaultPath,
       });
       if (!outputPath) {
@@ -1687,10 +1708,10 @@ function App({ profile }: { profile: string | null }) {
       const finalOutputPath = outputPath.endsWith(`.${ext}`) ? outputPath : outputPath + `.${ext}`;
       let maxPayloadBytes = 0;
       try {
-        maxPayloadBytes = await tauri.invoke<number>("get_dot_capacity", { path: coverPath });
-        addStegoLog(`Dot capacity: ${maxPayloadBytes} bytes`);
+        maxPayloadBytes = await tauri.invoke<number>(useQim ? "get_qim_capacity" : "get_dot_capacity", { path: coverPath });
+        addStegoLog(`${useQim ? "QIM" : "Dot"} capacity: ${maxPayloadBytes} bytes`);
       } catch (e) {
-        addStegoLog(`Dot capacity check failed: ${e instanceof Error ? e.message : String(e)}`);
+        addStegoLog(`Capacity check failed: ${e instanceof Error ? e.message : String(e)}`);
       }
       const buildBundle = async (eventList: NostrEvent[]) => {
         const pubkeysInEmbed = new Set(
@@ -1737,8 +1758,8 @@ function App({ profile }: { profile: string | null }) {
         addStegoLog(`Trimmed events: kept ${trimmedEvents.length}/${events.length} to fit capacity`);
       }
       const payloadToEmbed = "base64:" + uint8ArrayToBase64(payloadBytes);
-      setStegoProgress("Embedding with Dot (offset, robust)...");
-      const cmd = "encode_stego_dot";
+      setStegoProgress(useQim ? "Embedding with QIM (JPEG, survives recompression)..." : "Embedding with Dot (offset, robust)...");
+      const cmd = useQim ? "encode_stego_qim" : "encode_stego_dot";
       const result = await tauri.invoke<{ ok: boolean; path?: string; error?: string }>(cmd, {
         coverPath,
         outputPath: finalOutputPath,
@@ -1746,11 +1767,13 @@ function App({ profile }: { profile: string | null }) {
       });
       setEmbedModalOpen(false);
       if (result.ok && result.path) {
-        try {
-          const isPng = await tauri.invoke<boolean>("check_png_signature", { path: result.path });
-          addStegoLog(`PNG signature check: ${isPng ? "OK" : "FAIL"}`);
-        } catch (e) {
-          addStegoLog(`PNG signature check error: ${e instanceof Error ? e.message : String(e)}`);
+        if (!useQim) {
+          try {
+            const isPng = await tauri.invoke<boolean>("check_png_signature", { path: result.path });
+            addStegoLog(`PNG signature check: ${isPng ? "OK" : "FAIL"}`);
+          } catch (e) {
+            addStegoLog(`PNG signature check error: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
         addStegoLog(`Saved to: ${result.path}`);
         setStatus(`Saved to ${result.path}. Finder opened.`);

@@ -1,5 +1,16 @@
 # Robust Steganography Comparison
 
+> **Superseded / methodology caveat.** This matrix was run against a single flat, solid-color 512x512
+> test image, which never triggers the resize step at all (every profile's max width was larger than
+> the fixture) -- so the "PASS" results below don't actually demonstrate resize survival, only
+> recompression survival on a degenerate best case. Later testing against 9 realistic, non-flat cover
+> images (varied aspect ratios, textures, a screenshot, an adversarial flat gradient) with the fixes
+> described in [`ROBUSTNESS_PORT_NOTES.md`](../ROBUSTNESS_PORT_NOTES.md) found and fixed real gaps this
+> matrix couldn't have caught. See
+> [`channel_simulator/BASELINE_RESULTS.md`](../channel_simulator/BASELINE_RESULTS.md) for the current,
+> realistic-cover validation (45/45) and real WhatsApp/Instagram send confirmation. Kept below for
+> historical context on the encoder comparison.
+
 This document summarizes the encoder × channel pass/fail matrix after implementing alternative DCT-based methods and running them through the channel simulator. See [CHANNEL_SPEC.md](../channel_simulator/CHANNEL_SPEC.md) for exact profile parameters.
 
 ## Result (encoder × channel)

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/detect.schema.json",
+  "title": "stegstr-cli detect --json",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["ok", "encoder", "bundle"],
+      "additionalProperties": false,
+      "properties": {
+        "ok": { "const": true },
+        "encoder": { "type": "string", "enum": ["dwt", "qim"] },
+        "bundle": {
+          "description": "The decoded, decrypted Nostr bundle. See schema/bundle.schema.json for its shape.",
+          "type": "object"
+        }
+      }
+    },
+    { "$ref": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/error.schema.json" }
+  ]
+}

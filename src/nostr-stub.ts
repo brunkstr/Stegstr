@@ -67,6 +67,42 @@ export async function finishEventAsync(
   return ev as { id: string; pubkey: string; created_at: number; kind: number; tags: string[][]; content: string; sig: string };
 }
 
+/**
+ * NIP-01: verify a received event is genuine -- its `id` actually is
+ * sha256(serialize([0, pubkey, created_at, kind, tags, content])), and `sig`
+ * is a valid Schnorr signature over that id by `pubkey`. Without this, any
+ * relay in the pool (or a MITM between the app and a relay) can inject
+ * events that display as if signed by any pubkey, with nothing to catch it.
+ * Returns false (never throws) for any malformed or unverifiable event.
+ */
+export async function verifyEvent(ev: {
+  id: string;
+  pubkey: string;
+  created_at: number;
+  kind: number;
+  tags: string[][];
+  content: string;
+  sig: string;
+}): Promise<boolean> {
+  try {
+    if (
+      typeof ev.id !== "string" || !/^[0-9a-fA-F]{64}$/.test(ev.id) ||
+      typeof ev.pubkey !== "string" || !/^[0-9a-fA-F]{64}$/.test(ev.pubkey) ||
+      typeof ev.sig !== "string" || !/^[0-9a-fA-F]{128}$/.test(ev.sig) ||
+      typeof ev.created_at !== "number" || typeof ev.kind !== "number" ||
+      !Array.isArray(ev.tags) || typeof ev.content !== "string"
+    ) {
+      return false;
+    }
+    const serialized = JSON.stringify([0, ev.pubkey, ev.created_at, ev.kind, ev.tags, ev.content]);
+    const idBytes = await sha256(new TextEncoder().encode(serialized));
+    if (bytesToHex(idBytes) !== ev.id.toLowerCase()) return false;
+    return secp.schnorr.verify(hexToBytes(ev.sig), idBytes, hexToBytes(ev.pubkey));
+  } catch (_) {
+    return false;
+  }
+}
+
 /** Sync stub for when crypto.subtle isn't needed (local-only). */
 export function finishEvent(
   template: { kind: number; content: string; tags: string[][]; created_at: number },

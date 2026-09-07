@@ -1,0 +1,43 @@
+# Frontend build + test across supported Node.js versions. Separate from
+# build.yml (which builds the full Tauri app on a single Node LTS version
+# per OS) since Node-version compatibility is a JS/TS toolchain concern, not
+# an OS/Rust one -- testing it against the full OS x Rust build matrix would
+# multiply cost for no extra coverage.
+
+name: Frontend tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - release
+  pull_request:
+    branches:
+      - main
+      - release
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["18", "20", "22"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web bundle
+        run: npm run build:web
+
+      - name: Run test suite
+        run: npm test

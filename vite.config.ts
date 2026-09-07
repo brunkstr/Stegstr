@@ -14,6 +14,10 @@ export default defineConfig(async () => ({
     environment: "jsdom",
     setupFiles: ["./src/__tests__/setup.ts"],
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    // Network-dependent (talks to a real public relay) -- would be flaky in
+    // CI and hits a third party on every run. Run explicitly instead:
+    // npx vitest run src/__tests__/verify-against-real-relay.test.ts
+    exclude: ["**/node_modules/**", "src/__tests__/verify-against-real-relay.test.ts"],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

@@ -1,5 +1,16 @@
 # Plan: Surviving Real WhatsApp
 
+> **Superseded.** This plan predates the fixes in this fork and describes a real problem that existed
+> at the time (QIM failing on real WhatsApp) -- but the two root causes have since been found and
+> fixed: coefficient-domain embedding cannot survive an actual pixel resize (fixed by pre-resizing to a
+> universal safe width instead of guessing a destination platform), and redundant bit-copies were all
+> landing in the same 8x8 block, giving majority voting zero real protection (fixed with a
+> permutation-based interleaving scheme). Real WhatsApp now succeeds -- confirmed with an actual
+> WhatsApp send/receive round trip, not just simulation. See
+> [`ROBUSTNESS_PORT_NOTES.md`](../ROBUSTNESS_PORT_NOTES.md) and
+> [`channel_simulator/BASELINE_RESULTS.md`](../channel_simulator/BASELINE_RESULTS.md) for the current,
+> validated results. Kept below for historical context on the investigation.
+
 ## The problem
 
 - **QIM** passes our simulated WhatsApp (800px, Q65, 4:2:0) but **fails on real WhatsApp**.

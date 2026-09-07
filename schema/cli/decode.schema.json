@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/decode.schema.json",
+  "title": "stegstr-cli decode --json",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["ok", "encoder", "decrypted", "payload", "payload_encoding"],
+      "additionalProperties": false,
+      "properties": {
+        "ok": { "const": true },
+        "encoder": { "type": "string", "enum": ["dwt", "qim"] },
+        "decrypted": { "type": "boolean" },
+        "payload": {
+          "type": "string",
+          "description": "The extracted payload. If payload_encoding is base64, this is 'base64:<data>'; if utf8, this is the raw text (or, when decrypted is true, the decrypted bundle JSON text)."
+        },
+        "payload_encoding": { "type": "string", "enum": ["utf8", "base64"] }
+      }
+    },
+    { "$ref": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/error.schema.json" }
+  ]
+}

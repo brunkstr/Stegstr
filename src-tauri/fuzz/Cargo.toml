@@ -1,0 +1,21 @@
+[package]
+name = "stegstr-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.stegstr]
+path = ".."
+
+[[bin]]
+name = "decode_any"
+path = "fuzz_targets/decode_any.rs"
+test = false
+doc = false
+bench = false

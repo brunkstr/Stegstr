@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/calibrate.schema.json",
+  "title": "stegstr-cli calibrate --json",
+  "description": "Channel fingerprint inferred from a single --sent/--received pair. jpeg_quality/chroma_subsampling/progressive are null when --received isn't a JPEG (the tool measures what re-encoding did; a non-JPEG received file means no JPEG re-encode happened to measure). jpeg_quality_exact is true only when the recovered quantization table is a byte-exact match to the standard IJG scaling curve at that quality -- false means best-fit estimate, not a guess presented as fact (see jpeg_probe.rs). metadata_stripped is 'not_applicable...' (with exif/icc fields null) unless both sent and received are JPEG.",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "ok", "profile_name", "profiles_out", "sent", "received", "resize_rule",
+        "jpeg_quality", "jpeg_quality_exact", "jpeg_quality_match_error",
+        "chroma_subsampling", "progressive", "metadata_stripped",
+        "metadata_exif_stripped", "metadata_icc_stripped"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "ok": { "const": true },
+        "profile_name": { "type": "string" },
+        "profiles_out": { "type": "string" },
+        "sent": {
+          "type": "object",
+          "required": ["path", "width", "height"],
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string" },
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "received": {
+          "type": "object",
+          "required": ["path", "width", "height"],
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string" },
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "resize_rule": { "type": "string" },
+        "jpeg_quality": { "type": ["integer", "null"], "minimum": 1, "maximum": 100 },
+        "jpeg_quality_exact": { "type": ["boolean", "null"] },
+        "jpeg_quality_match_error": { "type": ["number", "null"], "minimum": 0 },
+        "chroma_subsampling": { "type": ["string", "null"], "enum": ["4:2:0", "4:2:2", "4:4:4", "unknown", null] },
+        "progressive": { "type": ["boolean", "null"] },
+        "metadata_stripped": { "type": "string" },
+        "metadata_exif_stripped": { "type": ["boolean", "null"] },
+        "metadata_icc_stripped": { "type": ["boolean", "null"] }
+      }
+    },
+    { "$ref": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/error.schema.json" }
+  ]
+}

@@ -220,12 +220,17 @@ describe("PLATFORM_WIDTHS", () => {
     expect(PLATFORM_WIDTHS).toHaveProperty("none");
   });
 
-  it("instagram is smallest at 1080", () => {
+  it("all platforms resolve to the same universal-safe width, not per-platform guesses", () => {
+    // Coefficient-domain embedding cannot survive an actual resize (see the
+    // comment above PLATFORM_WIDTHS's definition) -- pre-matching a guessed
+    // destination platform fails whenever that guess is wrong or the image
+    // is forwarded elsewhere, so every platform must resolve to the same
+    // safe width rather than its own "real" platform limit.
     const widths = Object.entries(PLATFORM_WIDTHS)
       .filter(([k]) => k !== "none")
       .map(([, v]) => v);
-    expect(Math.min(...widths)).toBe(1080);
-    expect(PLATFORM_WIDTHS.instagram).toBe(1080);
+    expect(new Set(widths).size).toBe(1);
+    expect(widths[0]).toBeGreaterThan(0);
   });
 
   it("default platform is instagram", () => {

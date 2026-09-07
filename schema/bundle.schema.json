@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/brunkstr/Stegstr/schema/bundle.schema.json",
+  "$id": "https://github.com/akifjanjua/Stegstr/schema/bundle.schema.json",
   "title": "Stegstr bundle",
-  "description": "Decrypted payload embedded in a Stegstr PNG. Raw layer: magic STEGSTR (7 bytes) + 4-byte big-endian length + this JSON (or encrypted bytes).",
+  "description": "Decrypted payload embedded in a Stegstr image (PNG via the default DWT encoder, or JPEG via the --robust QIM encoder). Raw layer: magic STEGSTR (7 bytes) + 4-byte big-endian length + this JSON (or encrypted bytes).",
   "type": "object",
   "required": ["version", "events"],
   "properties": {

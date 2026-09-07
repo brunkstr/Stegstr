@@ -42,15 +42,36 @@ const QIM_ERASURE_MARGIN = QIM_DELTA / 6.0;
 // Platform pre-resize widths (matching Python channel_simulator)
 // ---------------------------------------------------------------------------
 
-/** Platform target widths for pre-resize. */
+/**
+ * Pre-resize width used regardless of which platform is selected in the UI.
+ *
+ * IMPORTANT: these all resolve to the SAME universal-safe width (576, matching
+ * the Rust/CLI app's "max" preset -- see src-tauri/src/stego_qim.rs), not
+ * per-platform values. Coefficient-domain embedding cannot survive an actual
+ * pixel resize (resampling recomputes every 8x8 block from scratch --
+ * confirmed empirically at ~50% bit-error rate, i.e. random data; see
+ * channel_simulator/BASELINE_RESULTS.md). Pre-matching the width to one
+ * *specific* guessed destination platform (the previous approach here) fails
+ * completely whenever that guess is wrong, the image gets forwarded through a
+ * second platform, or the user doesn't know the destination -- which is the
+ * common case, not the exception. Embed must always shrink to a width safe
+ * for every platform it might end up shared through.
+ *
+ * The `targetPlatform` selector is kept only so existing UI code/tests
+ * referencing it don't need to change; it no longer affects the actual
+ * resize width. "none" remains an explicit no-resize opt-out for users who
+ * know what they're doing (e.g. embedding for local/offline use only).
+ */
+const UNIVERSAL_SAFE_WIDTH = 576;
+
 export const PLATFORM_WIDTHS: Record<string, number> = {
-  instagram: 1080,
-  facebook: 2048,
-  twitter: 1600,
-  whatsapp_standard: 1600,
-  whatsapp_hd: 4096,
-  telegram_photo: 1920,
-  imessage: 1280,
+  instagram: UNIVERSAL_SAFE_WIDTH,
+  facebook: UNIVERSAL_SAFE_WIDTH,
+  twitter: UNIVERSAL_SAFE_WIDTH,
+  whatsapp_standard: UNIVERSAL_SAFE_WIDTH,
+  whatsapp_hd: UNIVERSAL_SAFE_WIDTH,
+  telegram_photo: UNIVERSAL_SAFE_WIDTH,
+  imessage: UNIVERSAL_SAFE_WIDTH,
   none: 0,
 };
 
@@ -718,9 +739,16 @@ export async function resizeCoverForPlatform(
   let w = bitmap.width;
   let h = bitmap.height;
 
-  if (targetWidth > 0 && w > targetWidth) {
-    const scale = targetWidth / w;
-    w = targetWidth;
+  // Constrain by the LONGER side, matching real platforms (they cap the long
+  // edge, not literally the width) -- a narrow-but-tall cover (e.g. a cropped
+  // screenshot) would otherwise sail through this pre-resize unshrunk just
+  // because its width alone looked safe, then get resized for real once a
+  // platform touches it. Same fix as channel.py::_resize_to_max_dim and
+  // stego_qim.rs::encode on the desktop/CLI side.
+  const longSide = Math.max(w, h);
+  if (targetWidth > 0 && longSide > targetWidth) {
+    const scale = targetWidth / longSide;
+    w = Math.round(w * scale);
     h = Math.round(h * scale);
   }
 

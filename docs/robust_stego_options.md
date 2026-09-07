@@ -1,5 +1,12 @@
 # Robust Steganography Options Matrix
 
+> **Note:** this survey rated QIM's harsh-Q (WhatsApp) performance as merely "Moderate" -- that's since
+> been superseded: with a universal safe-width pre-resize, permutation-based redundancy, and a
+> Reed-Solomon erasure-fallback fix (none of which this survey anticipated), QIM now passes WhatsApp
+> reliably, confirmed with a real WhatsApp send/receive round trip. See
+> [`ROBUSTNESS_PORT_NOTES.md`](../ROBUSTNESS_PORT_NOTES.md) for what changed. Kept below as useful
+> historical context on the alternatives that were considered.
+
 Systematic survey of alternative embedding methods for surviving social-platform channel attacks (resize + JPEG recompression). For each option: summary, how it defeats resize/recompression, references, code availability, and feasibility for integration.
 
 ---

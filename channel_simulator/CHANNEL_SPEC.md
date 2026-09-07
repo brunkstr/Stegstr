@@ -10,6 +10,16 @@ Exact parameters for each simulated platform profile. "Defeating the situation" 
 | instagram | 1080      | 82           | 4:2:0              | LANCZOS       |
 | facebook  | 2048      | 77           | 4:2:0              | LANCZOS       |
 | twitter   | 600       | 82           | 4:2:0              | LANCZOS       |
+| telegram  | 1280      | 87           | 4:2:0              | LANCZOS       |
+
+Telegram parameters model its default "compress" send mode for photos (long side
+capped ~1280px on typical clients, JPEG re-encode). Sending as File/Document
+skips this entirely (Telegram preserves the original bytes) — see the Wiki for
+guidance on using that as a lossless-transport escape hatch.
+
+Use `simulate_chain(path, ["telegram", "whatsapp"])` to model a multi-hop
+re-share (received via one platform, then forwarded through another), which is
+strictly harsher than any single hop.
 
 ## Pipeline Order
 

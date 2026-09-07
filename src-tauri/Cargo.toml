@@ -4,6 +4,11 @@ version = "0.1.0"
 description = "Nostr client with steganographic transport"
 edition = "2021"
 default-run = "stegstr"
+# No MSRV was previously declared. 1.88.0 is the highest rust-version any
+# dependency in the resolved tree declares (the `time` crate, pulled in via
+# tauri's dependency chain) -- verified by actually building and running the
+# test suite with `cargo +1.88.0`, not just inferred from that number.
+rust-version = "1.88.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -36,4 +41,14 @@ sha2 = "0.10"
 rand = "0.8"
 secp256k1 = { version = "0.28", features = ["rand-std"] }
 hex = "0.4"
+mozjpeg-sys = "2"
+reed-solomon = "0.2"
+toml = "0.8"
+rmcp = { version = "0.3", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["full"] }
+schemars = "1.0"
+
+[dev-dependencies]
+proptest = "1"
+jsonschema = "0.30"
 

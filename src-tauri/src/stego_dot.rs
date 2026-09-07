@@ -35,7 +35,7 @@ fn bytes_to_bits(data: &[u8]) -> Vec<u8> {
 }
 
 fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity((bits.len() + 7) / 8);
+    let mut out = Vec::with_capacity(bits.len().div_ceil(8));
     for chunk in bits.chunks(8) {
         let mut byte = 0u8;
         for (i, &bit) in chunk.iter().enumerate() {
@@ -113,8 +113,8 @@ fn spread_positions(positions: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     }
     let mut ordered = vec![(0u32, 0u32); len];
     let mut idx: usize = 0;
-    for i in 0..len {
-        ordered[i] = positions[idx];
+    for slot in ordered.iter_mut() {
+        *slot = positions[idx];
         idx = (idx + step) % len;
     }
     ordered
@@ -158,7 +158,7 @@ fn encode_offset(img: &mut RgbImage, bits: &[u8]) -> Result<(), String> {
     let offsets = [(0u32, 0u32), (0, 1), (1, 0), (1, 1)];
     let symbols: Vec<[u8; 2]> = bits
         .chunks(2)
-        .map(|c| [*c.get(0).unwrap_or(&0), *c.get(1).unwrap_or(&0)])
+        .map(|c| [*c.first().unwrap_or(&0), *c.get(1).unwrap_or(&0)])
         .collect();
     let needed_cells = symbols.len() * REPEAT;
     if positions.len() < needed_cells {
