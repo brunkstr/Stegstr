@@ -97,12 +97,12 @@ export function useProfileAndMedia(deps: ProfileAndMediaDeps) {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (file.type.startsWith("image/") || file.type.startsWith("video/")) {
-          const url = await uploadMedia(file);
+          const url = await uploadMedia(file, effectivePrivKey);
           urls.push(url);
         }
       }
       setPostMediaUrls((prev) => [...prev, ...urls]);
-      setStatus(urls.length ? `Uploaded ${urls.length} file(s)` : "Select image or video files");
+      setStatus(urls.length ? `Uploaded ${urls.length} file(s) to nostr.build — stored unencrypted, readable by anyone with the URL` : "Select image or video files");
     } catch (err) {
       setStatus("Upload failed: " + (err instanceof Error ? err.message : String(err)));
     } finally {

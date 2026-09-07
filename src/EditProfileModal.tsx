@@ -10,6 +10,8 @@ export interface EditProfileModalProps {
   onEditAboutChange: (value: string) => void;
   editPicture: string;
   onEditPictureChange: (value: string) => void;
+  /** Hex private key of the acting identity; uploads are NIP-98 signed with it. */
+  privKeyHex: string;
   /** Called with a human-readable message when an upload fails. Without it, failures would be silent. */
   onError?: (message: string) => void;
   editBanner: string;
@@ -20,7 +22,7 @@ export interface EditProfileModalProps {
 export function uploadFailureMessage(what: string, err: unknown): string {
   const detail = err instanceof Error ? err.message : String(err);
   const hint = /401|nip-98|unauthori[sz]ed/i.test(detail)
-    ? "The image host now requires signed (NIP-98) uploads, which this version does not send yet."
+    ? "The image host rejected the signed (NIP-98) request; make sure an identity is selected and try again."
     : "Check your connection and try again.";
   return `${what} upload failed. ${hint} You can paste an image URL instead. (${detail.slice(0, 160)})`;
 }
@@ -34,6 +36,7 @@ export function EditProfileModal({
   onEditAboutChange,
   editPicture,
   onEditPictureChange,
+  privKeyHex,
   onError,
   editBanner,
   onEditBannerChange,
@@ -45,7 +48,7 @@ export function EditProfileModal({
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const url = await uploadMedia(file);
+      const url = await uploadMedia(file, privKeyHex);
       if (url) onEditPictureChange(url);
     } catch (err) {
       onError?.(uploadFailureMessage("Profile picture", err));
@@ -58,7 +61,7 @@ export function EditProfileModal({
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const url = await uploadMedia(file);
+      const url = await uploadMedia(file, privKeyHex);
       if (url) onEditBannerChange(url);
     } catch (err) {
       onError?.(uploadFailureMessage("Banner", err));
@@ -93,6 +96,7 @@ export function EditProfileModal({
             <input type="url" value={editBanner} onChange={(e) => onEditBannerChange(e.target.value)} placeholder="https://… or upload" className="wide" />
             <input ref={editCoverInputRef} type="file" accept="image/*" className="hidden-input" onChange={handleCoverUpload} />
             <button type="button" className="btn-secondary" onClick={() => editCoverInputRef.current?.click()}>Choose file</button>
+            <p className="muted" style={{ fontSize: "12px", marginTop: "6px" }}>Uploads go to nostr.build, signed by your identity, and are stored unencrypted — anyone with the URL can view them. Paste a URL to use an image hosted elsewhere.</p>
           </div>
         </label>
         <div className="row modal-actions">
