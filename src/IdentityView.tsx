@@ -1,3 +1,4 @@
+import { confirmDialog } from "./confirm";
 import * as Nostr from "./nostr-stub";
 import type { IdentityEntry, ProfileData } from "./types";
 import type { ConnectRelaysResult } from "./relay";
@@ -94,12 +95,12 @@ export function IdentityView({
                 <button
                   type="button"
                   className="identity-convert-btn"
-                  onClick={() => {
+                  onClick={async () => {
                     const nextCat = category === "nostr" ? "local" : "nostr";
                     const msg = nextCat === "local"
                       ? "Convert to Local? Your profile data from relays won't be deleted, but this identity will stop syncing with the network."
                       : "Convert to Nostr? When Network is ON, this identity will publish to relays. If a profile already exists on Nostr for this key, it will be used.";
-                    if (!window.confirm(msg)) return;
+                    if (!(await confirmDialog(msg))) return;
                     setIdentities((prev) => prev.map((i) => (i.id === id.id ? { ...i, category: nextCat } : i)));
                     if (nextCat === "nostr" && networkEnabled && relayRef.current) {
                       relayRef.current.requestProfiles([pk]);
