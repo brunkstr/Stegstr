@@ -1,6 +1,20 @@
 /**
  * Nostr relay client: subscribe (feed, profiles, DMs, contacts, reactions, replies) and publish.
- * Relay list is fetched from the Stegstr website config (relay.json).
+ *
+ * Reliability notes, since this layer used to fail quietly in three ways:
+ *
+ *   1. The relay list was fetched from stegstr.com with no timeout. When that
+ *      host is unreachable - as it is at the time of writing - every start-up
+ *      blocked on two TCP timeouts before falling back to the defaults. The
+ *      fetch is now bounded and the defaults are always available immediately.
+ *   2. A dropped socket was never re-established: `onclose` cleared the handle
+ *      and nothing reconnected, so a feed that worked at start-up silently
+ *      stopped updating. Connections now retry with exponential backoff and
+ *      re-send their subscriptions on reopen.
+ *   3. "Synced" was reported only once *every* relay sent EOSE, so a single
+ *      unreachable relay left the UI on "Connecting..." forever, while a single
+ *      failing relay was enough to paint the whole status as an error. Both are
+ *      now decided across the pool rather than by whichever relay spoke last.
  */
 
 import type { NostrEvent } from "./types";
@@ -19,6 +33,16 @@ export const DEFAULT_RELAYS = [
   "wss://relay.nostr.band",
 ];
 
+/** How long to wait for the hosted relay list before giving up on it. */
+const CONFIG_FETCH_TIMEOUT_MS = 2500;
+
+/** Reconnect backoff bounds. */
+const RECONNECT_BASE_MS = 800;
+const RECONNECT_MAX_MS = 30_000;
+
+/** Stop waiting for the slowest relay and call the initial load done. */
+const SYNC_TIMEOUT_MS = 8000;
+
 function parseConfigResponse(data: unknown): string[] {
   const obj = data as { relays?: unknown; proxyUrl?: string };
   if (Array.isArray(obj.relays)) {
@@ -35,17 +59,24 @@ function parseConfigResponse(data: unknown): string[] {
   return [];
 }
 
-/** Fetches relay list from website config; tries relay.php if relay.json fails (e.g. cPanel). */
+/**
+ * Fetches the relay list from the website config, falling back to the built-in
+ * defaults. Each attempt is bounded: an unreachable host must not be able to
+ * stall start-up.
+ */
 export async function getRelayUrls(): Promise<string[]> {
   for (const configUrl of [STEGSTR_CONFIG_URL, STEGSTR_CONFIG_URL_PHP]) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CONFIG_FETCH_TIMEOUT_MS);
     try {
-      const res = await fetch(configUrl);
+      const res = await fetch(configUrl, { signal: controller.signal });
       if (!res.ok) continue;
-      const data = await res.json();
-      const urls = parseConfigResponse(data);
+      const urls = parseConfigResponse(await res.json());
       if (urls.length > 0) return urls;
     } catch (_) {
-      // ignore, try next URL
+      // unreachable, timed out, or not JSON - try the next source
+    } finally {
+      clearTimeout(timer);
     }
   }
   return [...DEFAULT_RELAYS];
@@ -53,17 +84,30 @@ export async function getRelayUrls(): Promise<string[]> {
 
 export type RelayEventCallback = (event: NostrEvent) => void;
 
-type RelayHandle = { close: () => void; send: (payload: unknown[]) => void };
+/** Per-relay connection state, for status reporting. */
+export type RelayState = "connecting" | "open" | "synced" | "closed" | "error";
+
+export type RelayStatusCallback = (url: string, state: RelayState) => void;
+
+type RelayHandle = {
+  url: string;
+  close: () => void;
+  send: (payload: unknown[]) => void;
+};
 
 function connectRelay(
   relayUrl: string,
   ourPubkeys: string[],
   onEvent: RelayEventCallback,
   onEose?: () => void,
-  onError?: (err: unknown) => void
+  onError?: (err: unknown) => void,
+  onStatus?: RelayStatusCallback,
 ): RelayHandle {
   let closed = false;
   let ws: WebSocket | null = null;
+  let attempt = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
   const subId = "stegstr-feed-" + Math.random().toString(36).slice(2, 10);
   const subDm = "stegstr-dm-" + Math.random().toString(36).slice(2, 10);
   const dynamicSubIds = new Set<string>();
@@ -85,40 +129,53 @@ function connectRelay(
     if (t) { clearTimeout(t); dynamicSubTimeouts.delete(id); }
   }
 
-  function close() {
-    closed = true;
-    dynamicSubTimeouts.forEach((t) => clearTimeout(t));
-    dynamicSubTimeouts.clear();
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      try {
-        send(["CLOSE", subId]);
-        send(["CLOSE", subDm]);
-        dynamicSubIds.forEach((id) => send(["CLOSE", id]));
-      } catch (_) {}
-      ws.close();
-    }
-    ws = null;
+  function subscribe() {
+    send([
+      "REQ",
+      subId,
+      { kinds: [0, 1, 3, 5, 6, 10003], authors, limit: 200 },
+      { kinds: [0], limit: 500 },
+      { kinds: [1], limit: 300 },
+      { kinds: [6], limit: 300 },
+      { kinds: [7], "#p": authors, limit: 300 },
+      { kinds: [9735], "#p": authors, limit: 300 },
+    ]);
+    send(["REQ", subDm, { kinds: [4], "#p": authors, limit: 100 }]);
   }
 
-  try {
-    ws = new WebSocket(relayUrl);
+  function scheduleReconnect() {
+    if (closed || reconnectTimer) return;
+    // Exponential backoff with jitter, so a relay coming back up does not get
+    // hit by every client at the same instant.
+    const base = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** attempt);
+    const delay = base / 2 + Math.random() * (base / 2);
+    attempt++;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      open();
+    }, delay);
+  }
+
+  function open() {
+    if (closed) return;
+    onStatus?.(relayUrl, "connecting");
+    try {
+      ws = new WebSocket(relayUrl);
+    } catch (err) {
+      onStatus?.(relayUrl, "error");
+      onError?.(err);
+      scheduleReconnect();
+      return;
+    }
 
     ws.onopen = () => {
       if (closed) {
-        close();
+        try { ws?.close(); } catch (_) {}
         return;
       }
-      send([
-        "REQ",
-        subId,
-        { kinds: [0, 1, 3, 5, 6, 10003], authors, limit: 200 },
-        { kinds: [0], limit: 500 },
-        { kinds: [1], limit: 300 },
-        { kinds: [6], limit: 300 },
-        { kinds: [7], "#p": authors, limit: 300 },
-        { kinds: [9735], "#p": authors, limit: 300 },
-      ]);
-      send(["REQ", subDm, { kinds: [4], "#p": authors, limit: 100 }]);
+      attempt = 0; // a successful connection resets the backoff
+      onStatus?.(relayUrl, "open");
+      subscribe();
     };
 
     ws.onmessage = (ev) => {
@@ -138,6 +195,7 @@ function connectRelay(
         if (msg[0] === "EOSE") {
           const eoseSubId = msg[1] as string;
           if (eoseSubId === subId) {
+            onStatus?.(relayUrl, "synced");
             try {
               onEose?.();
             } catch (err) {
@@ -150,13 +208,39 @@ function connectRelay(
       } catch (_) {}
     };
 
-    ws.onerror = (err) => onError?.(err);
-    ws.onclose = () => { ws = null; };
-  } catch (err) {
-    onError?.(err);
+    ws.onerror = (err) => {
+      onStatus?.(relayUrl, "error");
+      onError?.(err);
+    };
+
+    ws.onclose = () => {
+      ws = null;
+      if (closed) return;
+      onStatus?.(relayUrl, "closed");
+      scheduleReconnect();
+    };
   }
 
+  function close() {
+    closed = true;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    dynamicSubTimeouts.forEach((t) => clearTimeout(t));
+    dynamicSubTimeouts.clear();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        send(["CLOSE", subId]);
+        send(["CLOSE", subDm]);
+        dynamicSubIds.forEach((id) => send(["CLOSE", id]));
+      } catch (_) {}
+    }
+    try { ws?.close(); } catch (_) {}
+    ws = null;
+  }
+
+  open();
+
   return {
+    url: relayUrl,
     close,
     send: (payload: unknown[]) => {
       if (payload[0] === "REQ" && typeof payload[1] === "string") {
@@ -198,122 +282,195 @@ export function connectRelays(
   onEvent: RelayEventCallback,
   onEose?: () => void,
   onError?: (err: unknown) => void,
-  relays: string[] = DEFAULT_RELAYS
+  relays: string[] = DEFAULT_RELAYS,
+  onStatus?: RelayStatusCallback,
 ): ConnectRelaysResult {
   const handles: RelayHandle[] = [];
-  let eoseCount = 0;
-  const expectedEose = relays.length;
   let lastSearchSubId: string | null = null;
   let lastMoreSubId: string | null = null;
+
+  // The same note arrives from every relay that carries it. Collapsing here
+  // keeps the cost off the UI, which would otherwise re-render per duplicate.
+  const seenEventIds = new Set<string>();
+  const SEEN_CAP = 20_000;
+  const dedupe: RelayEventCallback = (event) => {
+    if (seenEventIds.has(event.id)) return;
+    if (seenEventIds.size >= SEEN_CAP) seenEventIds.clear();
+    seenEventIds.add(event.id);
+    onEvent(event);
+  };
+
+  // The initial load is done when every relay has *settled* - synced, errored
+  // or closed - not when every relay has synced. One unreachable relay used to
+  // leave this pending forever.
+  const settled = new Set<string>();
+  let syncReported = false;
+  const failures = new Map<string, unknown>();
+
+  const syncTimer = setTimeout(() => reportSync(), SYNC_TIMEOUT_MS);
+
+  function reportSync() {
+    if (syncReported) return;
+    syncReported = true;
+    clearTimeout(syncTimer);
+    if (failures.size === relays.length && relays.length > 0) {
+      // Every relay failed: this is the only case the UI should call an error.
+      onError?.(new Error(`no relay reachable (tried ${relays.length})`));
+      return;
+    }
+    onEose?.();
+  }
+
+  function markSettled(url: string) {
+    settled.add(url);
+    if (settled.size >= relays.length) reportSync();
+  }
 
   for (const url of relays) {
     const h = connectRelay(
       url,
       ourPubkeys,
-      onEvent,
+      dedupe,
       () => {
-        eoseCount++;
-        if (eoseCount >= expectedEose) onEose?.();
+        failures.delete(url);
+        markSettled(url);
       },
-      onError
+      (err) => {
+        failures.set(url, err);
+        markSettled(url);
+      },
+      onStatus,
     );
     handles.push(h);
   }
 
+  const broadcast = (payload: unknown[]) => handles.forEach((h) => h.send(payload));
+
   return {
-    close: () => handles.forEach((h) => h.close()),
-    publish: (event: NostrEvent) => {
-      const payload = ["EVENT", event];
-      handles.forEach((h) => h.send(payload));
+    close: () => {
+      clearTimeout(syncTimer);
+      handles.forEach((h) => h.close());
     },
+    publish: (event: NostrEvent) => broadcast(["EVENT", event]),
     requestProfiles: (pubkeys: string[]) => {
       if (pubkeys.length === 0) return;
       const subId = "stegstr-profiles-" + Math.random().toString(36).slice(2, 10);
-      const payload = ["REQ", subId, { kinds: [0], authors: pubkeys, limit: 200 }];
-      handles.forEach((h) => h.send(payload));
+      broadcast(["REQ", subId, { kinds: [0], authors: pubkeys, limit: 200 }]);
     },
     requestReplies: (noteIds: string[]) => {
       if (noteIds.length === 0) return;
       const subId = "stegstr-replies-" + Math.random().toString(36).slice(2, 10);
-      const payload = ["REQ", subId, { kinds: [1], "#e": noteIds, limit: 500 }];
-      handles.forEach((h) => h.send(payload));
+      broadcast(["REQ", subId, { kinds: [1], "#e": noteIds, limit: 500 }]);
     },
     requestAuthor: (authorPubkey: string) => {
       if (!authorPubkey) return;
       const subId = "stegstr-author-" + Math.random().toString(36).slice(2, 10);
-      handles.forEach((h) => h.send(["REQ", subId, { kinds: [0, 1, 3], authors: [authorPubkey], limit: 200 }]));
+      broadcast(["REQ", subId, { kinds: [0, 1, 3], authors: [authorPubkey], limit: 200 }]);
     },
     /** Who follows this pubkey (kind 3 events that list them in "p" tag). */
     requestFollowers: (ofPubkey: string) => {
       if (!ofPubkey) return;
       const subId = "stegstr-followers-" + Math.random().toString(36).slice(2, 10);
-      handles.forEach((h) => h.send(["REQ", subId, { kinds: [3], "#p": [ofPubkey], limit: 500 }]));
+      broadcast(["REQ", subId, { kinds: [3], "#p": [ofPubkey], limit: 500 }]);
     },
     requestSearch: (query: string) => {
       const q = query.trim();
       if (!q) return;
       if (lastSearchSubId) {
-        handles.forEach((h) => h.send(["CLOSE", lastSearchSubId!]));
+        broadcast(["CLOSE", lastSearchSubId]);
         lastSearchSubId = null;
       }
       const subId = "stegstr-search-" + Math.random().toString(36).slice(2, 10);
       lastSearchSubId = subId;
-      const payload = ["REQ", subId, { kinds: [1], search: q, limit: 100 }];
-      handles.forEach((h) => h.send(payload));
+      broadcast(["REQ", subId, { kinds: [1], search: q, limit: 100 }]);
     },
     requestProfileSearch: (query: string) => {
       const q = query.trim();
       if (!q || q.length < 2) return;
       const subId = "stegstr-profile-search-" + Math.random().toString(36).slice(2, 10);
-      const payload = ["REQ", subId, { kinds: [0], search: q, limit: 50 }];
-      handles.forEach((h) => h.send(payload));
+      broadcast(["REQ", subId, { kinds: [0], search: q, limit: 50 }]);
     },
     requestMore: (until: number) => {
       if (lastMoreSubId) {
-        handles.forEach((h) => h.send(["CLOSE", lastMoreSubId!]));
+        broadcast(["CLOSE", lastMoreSubId]);
         lastMoreSubId = null;
       }
       const subId = "stegstr-more-" + Math.random().toString(36).slice(2, 10);
       lastMoreSubId = subId;
-      handles.forEach((h) => h.send(["REQ", subId, { kinds: [1], until, limit: 100 }]));
+      broadcast(["REQ", subId, { kinds: [1], until, limit: 100 }]);
     },
   };
 }
 
-const PUBLISH_OK_TIMEOUT_MS = 3000;
+const PUBLISH_OK_TIMEOUT_MS = 5000;
 
-/** Publish a signed event to relays. Keeps socket open until relay sends OK or timeout. */
-export function publishEvent(event: NostrEvent, relays: string[] = DEFAULT_RELAYS): void {
+export type PublishResult = {
+  url: string;
+  ok: boolean;
+  /** Relay-supplied reason when it rejected the event. */
+  message?: string;
+};
+
+/**
+ * Publish a signed event to relays over one-shot connections.
+ *
+ * Prefer `connectRelays(...).publish` when a pool is already open. This exists
+ * for the case where it is not, and unlike the previous version it reports what
+ * each relay actually said: a post that no relay accepted used to look exactly
+ * like a post that every relay accepted.
+ */
+export function publishEvent(
+  event: NostrEvent,
+  relays: string[] = DEFAULT_RELAYS,
+  onResult?: (result: PublishResult) => void,
+): Promise<PublishResult[]> {
   const payload = JSON.stringify(["EVENT", event]);
-  const eventId = event.id;
-  for (const url of relays) {
-    try {
-      const ws = new WebSocket(url);
-      const timeout = setTimeout(() => {
-        try {
-          if (ws.readyState === WebSocket.OPEN) ws.close();
-        } catch (_) {}
-      }, PUBLISH_OK_TIMEOUT_MS);
-      ws.onopen = () => {
-        ws.send(payload);
-      };
-      ws.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(ev.data as string) as unknown[];
-          if (msg[0] === "OK" && msg[1] === eventId) {
-            clearTimeout(timeout);
-            try {
-              ws.close();
-            } catch (_) {}
+
+  return Promise.all(
+    relays.map(
+      (url) =>
+        new Promise<PublishResult>((resolve) => {
+          let settled = false;
+          const finish = (result: PublishResult) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try { ws?.close(); } catch (_) {}
+            onResult?.(result);
+            resolve(result);
+          };
+
+          let ws: WebSocket | null = null;
+          const timer = setTimeout(
+            () => finish({ url, ok: false, message: "timed out waiting for OK" }),
+            PUBLISH_OK_TIMEOUT_MS,
+          );
+
+          try {
+            ws = new WebSocket(url);
+          } catch (err) {
+            finish({ url, ok: false, message: err instanceof Error ? err.message : String(err) });
+            return;
           }
-        } catch (_) {}
-      };
-      ws.onerror = () => {
-        clearTimeout(timeout);
-        try {
-          ws.close();
-        } catch (_) {}
-      };
-    } catch (_) {}
-  }
+
+          ws.onopen = () => {
+            try {
+              ws?.send(payload);
+            } catch (err) {
+              finish({ url, ok: false, message: err instanceof Error ? err.message : String(err) });
+            }
+          };
+          ws.onmessage = (ev) => {
+            try {
+              const msg = JSON.parse(ev.data as string) as unknown[];
+              if (msg[0] === "OK" && msg[1] === event.id) {
+                finish({ url, ok: msg[2] === true, message: typeof msg[3] === "string" ? msg[3] : undefined });
+              }
+            } catch (_) {}
+          };
+          ws.onerror = () => finish({ url, ok: false, message: "connection error" });
+          ws.onclose = () => finish({ url, ok: false, message: "closed before OK" });
+        }),
+    ),
+  );
 }
