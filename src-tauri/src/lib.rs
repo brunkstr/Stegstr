@@ -227,14 +227,17 @@ mod file_scope_tests {
 
     #[test]
     fn rejects_non_image_paths() {
-        assert!(check_image_path("/Users/x/.ssh/id_rsa").is_err());
-        assert!(check_image_path("/Users/x/.bashrc").is_err());
-        assert!(check_image_path("/Users/x/photo.jpg.sh").is_err());
+        // temp_dir() is absolute on every platform (a drive-letter path on Windows).
+        let base = std::env::temp_dir();
+        let abs = |name: &str| base.join(name).to_string_lossy().into_owned();
+        assert!(check_image_path(&abs(".ssh/id_rsa")).is_err());
+        assert!(check_image_path(&abs(".bashrc")).is_err());
+        assert!(check_image_path(&abs("photo.jpg.sh")).is_err());
         assert!(check_image_path("relative/photo.jpg").is_err());
-        assert!(check_image_path("/Users/x/../etc/photo.png").is_err());
-        assert!(check_image_path("/Users/x/Photo.JPG").is_ok());
-        assert!(check_image_path("/Users/x/photo.jpeg").is_ok());
-        assert!(check_image_path("/Users/x/photo.png").is_ok());
+        assert!(check_image_path(&base.join("..").join("photo.png").to_string_lossy()).is_err());
+        assert!(check_image_path(&abs("Photo.JPG")).is_ok());
+        assert!(check_image_path(&abs("photo.jpeg")).is_ok());
+        assert!(check_image_path(&abs("photo.png")).is_ok());
     }
 
     #[test]
