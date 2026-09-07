@@ -2,6 +2,7 @@
 import { type Dispatch, type SetStateAction, useCallback, useState } from "react";
 import * as Nostr from "../nostr-stub";
 import { uploadMedia } from "../upload";
+import { withReferralTag } from "./referral";
 import * as logger from "../logger";
 import type { IdentityEntry, NostrEvent, ProfileData } from "../types";
 
@@ -59,7 +60,7 @@ export function useProfileAndMedia(deps: ProfileAndMediaDeps) {
       {
         kind: 0,
         content,
-        tags: [],
+        tags: withReferralTag([]),
         created_at: Math.floor(Date.now() / 1000),
       },
       sk

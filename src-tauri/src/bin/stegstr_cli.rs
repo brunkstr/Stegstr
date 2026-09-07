@@ -146,7 +146,7 @@ Usage:
   stegstr-cli decode <image.png|.jpg> [--decrypt] [--json]
   stegstr-cli detect <image.png|.jpg> [--json]
   stegstr-cli embed <cover> -o <out> --payload <string|@file> [--encrypt] [--payload-base64] [--robust|--robustness standard|max] [--json]
-  stegstr-cli post "content" [--privkey-hex HEX] [--output bundle.json] [--json]
+  stegstr-cli post "content" [--privkey-hex HEX] [--ref CODE] [--output bundle.json] [--json]
   stegstr-cli calibrate --sent <original> --received <roundtripped> [--name <profile>] [--profiles-out <path>] [--json]
   stegstr-cli mcp
 
@@ -188,6 +188,9 @@ Embed:
 Post:
   Creates a kind 1 Nostr note with Stegstr suffix. Outputs bundle JSON to stdout or --output file.
   --privkey-hex <hex>    Nostr secret key (64-char hex). If omitted, a new key is generated for this run.
+  --ref <code>           Publicity-contest referral code (or stegstr.com/r/CODE URL). Adds the
+                         indexed tag ["r","https://stegstr.com/r/CODE"] so the relay scan can
+                         attribute this key. See contest/PUBLICITY_CONTEST.md.
 
 Calibrate:
   Compares a sent original against the file received back after a platform
@@ -467,7 +470,24 @@ fn ensure_stegstr_suffix(content: &str) -> String {
 }
 
 /// Create a NIP-01 kind 1 event and return (id_hex, pubkey_hex, created_at, sig_hex) for bundle JSON.
-fn create_kind1_event(content: &str, sk: &secp256k1::SecretKey) -> Result<(String, String, u64, String), String> {
+/// Validates a referral code (4-8 chars from an alphabet without 0/O/1/I/L,
+/// case-insensitive; a full stegstr.com/r/CODE URL is accepted too) and
+/// returns the referral URL that goes into the `r` tag.
+fn referral_url(input: &str) -> Result<String, CliError> {
+    let mut s = input.trim().to_string();
+    if let Some(pos) = s.find("/r/") {
+        s = s[pos + 3..].split(|c| c == '/' || c == '?' || c == '#').next().unwrap_or("").to_string();
+    }
+    let code: String = s.chars().filter(|c| !c.is_whitespace() && *c != '-').map(|c| c.to_ascii_uppercase()).collect();
+    let ok = (4..=8).contains(&code.len())
+        && code.chars().all(|c| matches!(c, 'A'..='H' | 'J' | 'K' | 'M' | 'N' | 'P'..='Z' | '2'..='9'));
+    if !ok {
+        return Err(CliError::malformed(format!("invalid --ref code {input:?}: 4-8 characters, letters A-Z except I/L/O and digits 2-9")));
+    }
+    Ok(format!("https://stegstr.com/r/{code}"))
+}
+
+fn create_kind1_event(content: &str, tags: &[Vec<String>], sk: &secp256k1::SecretKey) -> Result<(String, String, u64, String), String> {
     let secp = Secp256k1::new();
     let pk = secp256k1::Keypair::from_secret_key(&secp, sk);
     let (xonly, _parity) = pk.x_only_public_key();
@@ -476,7 +496,6 @@ fn create_kind1_event(content: &str, sk: &secp256k1::SecretKey) -> Result<(Strin
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_secs();
-    let tags: Vec<Vec<String>> = vec![];
     let serialized = serde_json::to_string(&serde_json::json!([0, pubkey_hex, created_at, 1, tags, content]))
         .map_err(|e| e.to_string())?;
     let id_hash = Sha256::digest(serialized.as_bytes());
@@ -492,10 +511,14 @@ fn run_post(args: &[String], json: bool) -> Result<(), CliError> {
     let mut content: Option<String> = None;
     let mut privkey_hex: Option<String> = None;
     let mut output_path: Option<&str> = None;
+    let mut ref_code: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
-        if a == "--privkey-hex" {
+        if a == "--ref" {
+            i += 1;
+            ref_code = Some(args.get(i).ok_or_else(|| CliError::generic("missing value for --ref"))?.clone());
+        } else if a == "--privkey-hex" {
             i += 1;
             privkey_hex = Some(args.get(i).ok_or_else(|| CliError::generic("missing value for --privkey-hex"))?.clone());
         } else if a == "--output" {
@@ -508,6 +531,12 @@ fn run_post(args: &[String], json: bool) -> Result<(), CliError> {
     }
     let content = content.ok_or_else(|| CliError::generic("post requires content (e.g. post \"Hello world\")"))?;
     let content_with_suffix = ensure_stegstr_suffix(&content);
+    // Publicity-contest referral code: an indexed `r` tag pointing at the
+    // referral URL, the same tag the app adds. See contest/PUBLICITY_CONTEST.md.
+    let tags: Vec<Vec<String>> = match ref_code {
+        Some(code) => vec![vec!["r".to_string(), referral_url(&code)?]],
+        None => vec![],
+    };
     let sk = if let Some(hex) = privkey_hex {
         let bytes = hex::decode(hex.trim()).map_err(|e| CliError::malformed(format!("invalid --privkey-hex: {e}")))?;
         secp256k1::SecretKey::from_slice(&bytes).map_err(|e| CliError::malformed(format!("invalid --privkey-hex: {e}")))?
@@ -515,13 +544,13 @@ fn run_post(args: &[String], json: bool) -> Result<(), CliError> {
         secp256k1::SecretKey::new(&mut rand::thread_rng())
     };
     let (id_hex, pubkey_hex, created_at, sig_hex) =
-        create_kind1_event(&content_with_suffix, &sk).map_err(CliError::generic)?;
+        create_kind1_event(&content_with_suffix, &tags, &sk).map_err(CliError::generic)?;
     let event = serde_json::json!({
         "id": id_hex,
         "pubkey": pubkey_hex,
         "created_at": created_at,
         "kind": 1,
-        "tags": [],
+        "tags": tags,
         "content": content_with_suffix,
         "sig": sig_hex
     });

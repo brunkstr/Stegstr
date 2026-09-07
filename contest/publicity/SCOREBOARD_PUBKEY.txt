@@ -1,0 +1,1 @@
+Scoreboard signer pubkey (relay VM /opt/publicity/scoreboard.key): b3ca4e80563a73c508956044aafe705d77ffa36f520d5a4c09b3229caa1fcede
