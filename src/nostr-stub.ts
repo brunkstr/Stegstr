@@ -103,18 +103,30 @@ export async function verifyEvent(ev: {
   }
 }
 
-/** Sync stub for when crypto.subtle isn't needed (local-only). */
+/**
+ * Synchronous NIP-01 event signing.
+ *
+ * This used to be a placeholder that faked both fields: the id was a 32-bit
+ * string hash rather than SHA-256, and the signature was the secret key itself,
+ * hex-encoded and padded to the right length. Nothing in the app called it, so
+ * no key was ever published, but it was exported and shaped exactly like the
+ * real thing - one future caller away from broadcasting a user's private key to
+ * every relay it connects to.
+ *
+ * It now signs for real. sha256 from @noble/hashes is synchronous, so there was
+ * never a reason to fake it: only the WebCrypto path needed to be async.
+ * (Fix contributed by Saif, contest entry #71, PR #2.)
+ */
 export function finishEvent(
   template: { kind: number; content: string; tags: string[][]; created_at: number },
   secretKey: Uint8Array
 ): { id: string; pubkey: string; created_at: number; kind: number; tags: string[][]; content: string; sig: string } {
   const pubkey = getPublicKey(secretKey);
   const ev = { ...template, pubkey, id: "", sig: "" };
-  const s = JSON.stringify([0, ev.pubkey, ev.created_at, ev.kind, ev.tags, ev.content]);
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  ev.id = Math.abs(h).toString(16).padStart(16, "0") + Date.now().toString(16);
-  ev.sig = bytesToHex(secretKey).slice(0, 128).padEnd(128, "0");
+  const serialized = JSON.stringify([0, ev.pubkey, ev.created_at, ev.kind, ev.tags, ev.content]);
+  const idBytes = sha256Sync(new TextEncoder().encode(serialized));
+  ev.id = bytesToHex(idBytes);
+  ev.sig = bytesToHex(secp.schnorr.sign(idBytes, secretKey));
   return ev as { id: string; pubkey: string; created_at: number; kind: number; tags: string[][]; content: string; sig: string };
 }
 
