@@ -6,14 +6,17 @@ import { getTauri } from "./platform-desktop";
 import { connectRelays, publishEvent, DEFAULT_RELAYS, getRelayUrls } from "./relay";
 import { uint8ArrayToBase64 } from "./utils";
 import {
-  decodeQimImageFile,
-  encodeQimImageFile,
-  resizeCoverForPlatform,
-  qimSelfTest,
-  getQimCapacityForFile,
-  PLATFORM_WIDTHS,
-  DEFAULT_PLATFORM,
-} from "./stego-qim";
+  decodeStdmImageFile,
+  encodeStdmImageFile,
+  stdmSelfTest,
+  getStdmCapacityForFile,
+  MODES,
+  // aliased: this file already has a local `payloadBytes` in the embed flow
+  payloadBytes as stdmPayloadBytes,
+  type ModeName,
+} from "./stego-stdm-web";
+// Detection only - kept so images made by older builds still open.
+import { decodeQimImageFile } from "./stego-qim";
 import { uploadMedia } from "./upload";
 import { ensureStegstrSuffix } from "./constants";
 import * as stegoCrypto from "./stego-crypto";
@@ -223,8 +226,8 @@ function App({ profile }: { profile: string | null }) {
   const [dmDecrypted, setDmDecrypted] = useState<Record<string, string>>({});
   const [searchQuery, setSearchQuery] = useState("");
   const [embedModalOpen, setEmbedModalOpen] = useState(false);
-  const [embedMethod, setEmbedMethod] = useState<StegoMethod>("qim");
-  const [targetPlatform, setTargetPlatform] = useState<string>("instagram");
+  const [embedMethod, setEmbedMethod] = useState<StegoMethod>("robust");
+  const [stegoMode, setStegoMode] = useState<ModeName>("standard");
   const [embedCoverFile, setEmbedCoverFile] = useState<File | null>(null);
   const [embedRecipientMode, setEmbedRecipientMode] = useState<"open" | "recipients">("open");
   const [embedRecipientInput, setEmbedRecipientInput] = useState("");
@@ -1101,29 +1104,38 @@ function App({ profile }: { profile: string | null }) {
       addStegoLog(`Selected: ${file.name} (${file.size} bytes, type: ${file.type})`);
       logger.logAction("detect_started", "Decoding stego image (browser)", { name: file.name });
       try {
-      // Try QIM first for JPEG files, then fall back to Dot
+      // Newest format first, then the two older ones. The legacy readers stay
+      // so that images embedded by earlier builds keep opening.
       let result: { ok: boolean; payload?: string; error?: string } = { ok: false };
       const isJpeg = file.type === "image/jpeg" || file.name.toLowerCase().endsWith(".jpg") || file.name.toLowerCase().endsWith(".jpeg");
       if (isJpeg) {
-        setStegoProgress("Trying QIM decode (robust)...");
-        addStegoLog("Trying QIM steganography decode...");
+        setStegoProgress("Reading hidden data...");
+        addStegoLog("Trying robust (STDM) decode...");
         try {
-          result = await decodeQimImageFile(file);
+          result = await decodeStdmImageFile(file);
           if (result.ok) {
-            addStegoLog(`QIM decode OK! Payload: ${result.payload?.length ?? 0} chars`);
+            addStegoLog(`Robust decode OK (${(result as { mode?: string }).mode ?? "?"} mode)`);
           } else {
-            addStegoLog(`QIM decode failed: ${result.error ?? "unknown"}, falling back to Dot...`);
+            addStegoLog(`Robust decode found nothing, trying legacy QIM...`);
           }
-        } catch (qimErr) {
-          addStegoLog(`QIM decode error: ${qimErr instanceof Error ? qimErr.message : String(qimErr)}, falling back to Dot...`);
+        } catch (err) {
+          addStegoLog(`Robust decode error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+
+        if (!result.ok) {
+          setStegoProgress("Trying legacy QIM decode...");
+          try {
+            result = await decodeQimImageFile(file);
+            if (result.ok) addStegoLog("Legacy QIM decode OK (image made by an older build)");
+          } catch (err) {
+            addStegoLog(`Legacy QIM decode error: ${err instanceof Error ? err.message : String(err)}`);
+          }
         }
       }
       if (!result.ok) {
         setStegoProgress("Extracting hidden data (Dot decode)...");
         addStegoLog("Running Dot steganography decode...");
-        console.log("[App] Starting decodeStegoFile for:", file.name, "size:", file.size);
         result = await decodeStegoFile(file);
-        console.log("[App] decodeStegoFile result:", result.ok, "error:", result.error, "payloadLen:", result.payload?.length);
       }
       if (!result.ok || !result.payload) {
         const err = result.error || "Decode failed";
@@ -1564,58 +1576,52 @@ function App({ profile }: { profile: string | null }) {
           return encrypted;
         };
 
-        if (embedMethod === "qim") {
-          // ===== QIM BRANCH =====
-          addStegoLog(`Using QIM method (target platform: ${targetPlatform})`);
+        if (embedMethod === "robust") {
+          // ===== ROBUST (STDM) BRANCH =====
+          // No pre-resize step: the encoder normalises the image internally,
+          // so the destination platform no longer has to be guessed.
+          addStegoLog(`Using robust encoder (mode: ${stegoMode})`);
 
-          // Step 1: Pre-resize cover for platform
-          setStegoProgress("Pre-resizing image for target platform...");
-          const platformWidth = PLATFORM_WIDTHS[targetPlatform] ?? PLATFORM_WIDTHS[DEFAULT_PLATFORM];
-          let resizedCover: File;
-          try {
-            resizedCover = await resizeCoverForPlatform(embedCoverFile, platformWidth);
-            addStegoLog(`Resized cover: ${resizedCover.name} (${resizedCover.size} bytes)`);
-          } catch (e) {
-            setDecodeError(`Resize failed: ${e instanceof Error ? e.message : String(e)}`);
+          const capacity = await getStdmCapacityForFile(embedCoverFile, stegoMode);
+          addStegoLog(`Capacity: ${capacity.capacityBytes} bytes (${capacity.width}x${capacity.height})`);
+          if (!capacity.usable) {
+            setDecodeError(
+              `Image too small for this mode: shortest edge is ${Math.min(capacity.width, capacity.height)}px, needs ${capacity.minEdge}px`,
+            );
             setEmbedding(false);
             return;
           }
 
-          // Step 2: Check QIM capacity
-          const { capacityBytes: maxPayloadBytes, width: resW, height: resH } = await getQimCapacityForFile(embedCoverFile, targetPlatform);
-          addStegoLog(`QIM capacity: ${maxPayloadBytes} bytes (${resW}x${resH})`);
-
-          // Step 3: Encrypt and fit payload
-          const encrypted = await encryptAndFit(maxPayloadBytes);
+          const encrypted = await encryptAndFit(stdmPayloadBytes(MODES[stegoMode]));
           if (!encrypted) {
-            setDecodeError("Image too small for stego payload (try a larger image or fewer events)");
+            setDecodeError("Payload does not fit this mode (try a larger payload mode or fewer events)");
             setEmbedding(false);
             return;
           }
 
-          // Step 4: QIM embed
-          setStegoProgress("Embedding data into image (QIM encode)...");
-          addStegoLog("Running QIM steganography encode...");
+          setStegoProgress("Embedding data into image...");
           let blob: Blob;
           try {
-            blob = await encodeQimImageFile(resizedCover, encrypted);
-            addStegoLog(`QIM encode complete! Output: ${blob.size} bytes JPEG`);
+            blob = await encodeStdmImageFile(embedCoverFile, encrypted, stegoMode);
+            addStegoLog(`Encode complete: ${blob.size} bytes JPEG`);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            setDecodeError(`QIM encode failed: ${msg}`);
+            setDecodeError(`Encode failed: ${msg}`);
             setEmbedding(false);
             return;
           }
 
-          // Step 5: Round-trip self-test
+          // Read it back before claiming success, so a silent failure surfaces
+          // here rather than at the recipient.
           setStegoProgress("Verifying embed integrity (self-test)...");
-          addStegoLog("Running round-trip self-test...");
-          const selfTestResult = await qimSelfTest(blob, encrypted);
+          const selfTestResult = await stdmSelfTest(blob, encrypted, stegoMode);
           if (selfTestResult.ok) {
-            addStegoLog("Self-test PASSED! Payload survives encode/decode round-trip.");
+            addStegoLog("Self-test PASSED - payload reads back byte for byte.");
           } else {
             addStegoLog(`Self-test FAILED: ${selfTestResult.error}`);
-            addStegoLog("WARNING: Payload may not survive platform transforms. Consider using Dot method instead.");
+            setDecodeError(`Embed verification failed: ${selfTestResult.error}`);
+            setEmbedding(false);
+            return;
           }
 
           // Step 6: Download
@@ -1629,7 +1635,7 @@ function App({ profile }: { profile: string | null }) {
           setEmbedding(false);
           setStegoProgress("");
           setStatus("Image downloaded. Save it from your Downloads folder.");
-          logger.logAction("embed_completed", "QIM embed saved (browser download)", { eventCount: events.length, platform: targetPlatform });
+          logger.logAction("embed_completed", "QIM embed saved (browser download)", { eventCount: events.length, mode: stegoMode });
           return;
         }
 
@@ -1773,7 +1779,7 @@ function App({ profile }: { profile: string | null }) {
       setEmbedding(false);
       setStegoProgress("");
     }
-  }, [embedModalOpen, embedCoverFile, events, profiles, identities, addStegoLog, embedRecipientMode, embedRecipients, effectivePrivKey, embedMethod, targetPlatform]);
+  }, [embedModalOpen, embedCoverFile, events, profiles, identities, addStegoLog, embedRecipientMode, embedRecipients, effectivePrivKey, embedMethod, stegoMode]);
 
   const resolvePubkeyFromInput = useCallback((input: string): string | null => {
     const s = input.trim().replace(/\s/g, "");
@@ -2691,8 +2697,8 @@ function App({ profile }: { profile: string | null }) {
           profiles={profiles}
           stegoMethod={embedMethod}
           onStegoMethodChange={setEmbedMethod}
-          targetPlatform={targetPlatform}
-          onTargetPlatformChange={setTargetPlatform}
+          stegoMode={stegoMode}
+          onStegoModeChange={setStegoMode}
         />
       )}
 

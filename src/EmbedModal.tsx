@@ -1,22 +1,11 @@
 import { useState, useEffect } from "react";
 import * as Nostr from "./nostr-stub";
 import { isWeb, pickImageFile } from "./platform-web";
-import { PLATFORM_WIDTHS, getQimCapacityForFile } from "./stego-qim";
+import { MODES, MODE_LABELS, getStdmCapacityForFile, payloadBytes, type ModeName } from "./stego-stdm-web";
 import { getDotCapacityForFile } from "./stego-dot-web";
 import type { ProfileData } from "./types";
 
-export type StegoMethod = "qim" | "dot";
-
-const PLATFORM_LABELS: Record<string, string> = {
-  instagram: "Instagram (1080px)",
-  facebook: "Facebook (2048px)",
-  twitter: "Twitter/X (1600px)",
-  whatsapp_standard: "WhatsApp Standard (1600px)",
-  whatsapp_hd: "WhatsApp HD (4096px)",
-  telegram_photo: "Telegram (1920px)",
-  imessage: "iMessage (1280px)",
-  none: "No resize (original size)",
-};
+export type StegoMethod = "robust" | "dot";
 
 export interface EmbedModalProps {
   onClose: () => void;
@@ -34,8 +23,8 @@ export interface EmbedModalProps {
   profiles: Record<string, ProfileData>;
   stegoMethod: StegoMethod;
   onStegoMethodChange: (method: StegoMethod) => void;
-  targetPlatform: string;
-  onTargetPlatformChange: (platform: string) => void;
+  stegoMode: ModeName;
+  onStegoModeChange: (mode: ModeName) => void;
 }
 
 export function EmbedModal({
@@ -54,8 +43,8 @@ export function EmbedModal({
   profiles,
   stegoMethod,
   onStegoMethodChange,
-  targetPlatform,
-  onTargetPlatformChange,
+  stegoMode,
+  onStegoModeChange,
 }: EmbedModalProps) {
   const [capacityInfo, setCapacityInfo] = useState<string>("");
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -68,11 +57,13 @@ export function EmbedModal({
     let cancelled = false;
     (async () => {
       try {
-        if (stegoMethod === "qim") {
-          const info = await getQimCapacityForFile(embedCoverFile, targetPlatform);
+        if (stegoMethod === "robust") {
+          const info = await getStdmCapacityForFile(embedCoverFile, stegoMode);
           if (!cancelled) {
             setCapacityInfo(
-              `Capacity: ~${Math.floor(info.capacityBytes / 1024)} KB (${info.width}x${info.height} JPEG)`,
+              info.usable
+                ? `Capacity: ${info.capacityBytes} bytes (${info.width}x${info.height})`
+                : `Image too small for this mode: shortest edge is ${Math.min(info.width, info.height)}px, needs ${info.minEdge}px`,
             );
           }
         } else {
@@ -86,7 +77,7 @@ export function EmbedModal({
       }
     })();
     return () => { cancelled = true; };
-  }, [embedCoverFile, stegoMethod, targetPlatform]);
+  }, [embedCoverFile, stegoMethod, stegoMode]);
 
   const addRecipient = () => {
     const raw = recipientInput.trim();
@@ -188,8 +179,8 @@ export function EmbedModal({
               <label className="embed-section-label">Encoding method:</label>
               <div style={{ display: "flex", gap: "1rem" }}>
                 <label style={{ cursor: "pointer" }}>
-                  <input type="radio" name="stego-method" checked={stegoMethod === "qim"} onChange={() => onStegoMethodChange("qim")} />
-                  {" "}QIM (JPEG, robust)
+                  <input type="radio" name="stego-method" checked={stegoMethod === "robust"} onChange={() => onStegoMethodChange("robust")} />
+                  {" "}Robust (JPEG, survives resizing)
                 </label>
                 <label style={{ cursor: "pointer" }}>
                   <input type="radio" name="stego-method" checked={stegoMethod === "dot"} onChange={() => onStegoMethodChange("dot")} />
@@ -198,20 +189,24 @@ export function EmbedModal({
               </div>
             </div>
 
-            {/* Platform selector (QIM only) */}
-            {stegoMethod === "qim" && (
-              <div className="embed-platform-selector" style={{ marginTop: "0.5rem" }}>
-                <label className="embed-section-label">Target platform:</label>
+            {/* How much to carry. There is no target-platform choice any more:
+                the robust encoder normalises the image, so where it is going
+                stops mattering. What still matters is payload size. */}
+            {stegoMethod === "robust" && (
+              <div className="embed-mode-selector" style={{ marginTop: "0.5rem" }}>
+                <label className="embed-section-label">Payload size:</label>
                 <select
-                  value={targetPlatform}
-                  onChange={(e) => onTargetPlatformChange(e.target.value)}
+                  value={stegoMode}
+                  onChange={(e) => onStegoModeChange(e.target.value as ModeName)}
                 >
-                  {Object.keys(PLATFORM_WIDTHS).map((key) => (
-                    <option key={key} value={key}>{PLATFORM_LABELS[key] ?? key}</option>
+                  {(Object.keys(MODES) as ModeName[]).map((key) => (
+                    <option key={key} value={key}>
+                      {MODE_LABELS[key].title} - {payloadBytes(MODES[key])} bytes
+                    </option>
                   ))}
                 </select>
                 <p className="muted" style={{ fontSize: "0.8rem", marginTop: "0.25rem" }}>
-                  Pre-resizes to match platform max width. Default (Instagram/1080px) works on all platforms.
+                  {MODE_LABELS[stegoMode].detail}
                 </p>
               </div>
             )}
