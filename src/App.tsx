@@ -2,8 +2,6 @@ import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import * as Nostr from "./nostr-stub";
 import { isWeb } from "./platform-web";
 import { getTauri } from "./platform-desktop";
-import { uploadMedia } from "./upload";
-import { confirmDialog } from "./confirm";
 import { ensureStegstrSuffix } from "./constants";
 import * as logger from "./logger";
 import { useToast, ToastContainer } from "./Toast";
@@ -25,10 +23,11 @@ import { NewMessageModal } from "./NewMessageModal";
 import type { NostrEvent, IdentityEntry, View, ProfileData } from "./types";
 import { useRelayConnection } from "./app/useRelayConnection";
 import { useStego } from "./app/useStego";
+import { useNoteActions } from "./app/useNoteActions";
+import { useProfileAndMedia } from "./app/useProfileAndMedia";
 import "./App.css";
 
-import { BASE_IDENTITIES, BASE_ACTING, BASE_VIEWING, BASE_MUTE_PUBKEYS, BASE_MUTE_WORDS, BASE_ZAP_QUEUE, BASE_DM_READ, BASE_NOTIF_READ, getDefaultFollowPubkeys, getStorageProfileSync, getStorageKey, getOrCreateAnonKey, loadQueuedZaps, migrateToIdentities } from "./app/storage";
-import type { QueuedZap } from "./app/storage";
+import { BASE_IDENTITIES, BASE_ACTING, BASE_VIEWING, BASE_MUTE_PUBKEYS, BASE_MUTE_WORDS, BASE_DM_READ, BASE_NOTIF_READ, getDefaultFollowPubkeys, getStorageProfileSync, getStorageKey, getOrCreateAnonKey, migrateToIdentities } from "./app/storage";
 
 export type { IdentityEntry } from "./types";
 
@@ -58,17 +57,10 @@ function App({ profile }: { profile: string | null }) {
   const [events, setEvents] = useState<NostrEvent[]>([]);
   const [profiles, setProfiles] = useState<Record<string, ProfileData>>({});
   const [newPost, setNewPost] = useState("");
-  const [postMediaUrls, setPostMediaUrls] = useState<string[]>([]);
-  const [uploadingMedia, setUploadingMedia] = useState(false);
   const [status, setStatus] = useState<string>("");
   const [view, setView] = useState<View>("feed");
   const [replyingTo, setReplyingTo] = useState<NostrEvent | null>(null);
   const [replyContent, setReplyContent] = useState("");
-  const [editProfileOpen, setEditProfileOpen] = useState(false);
-  const [editName, setEditName] = useState("");
-  const [editAbout, setEditAbout] = useState("");
-  const [editPicture, setEditPicture] = useState("");
-  const [editBanner, setEditBanner] = useState("");
   const [dmDecrypted, setDmDecrypted] = useState<Record<string, string>>({});
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedMessagePeer, setSelectedMessagePeer] = useState<string | null>(null);
@@ -120,7 +112,6 @@ function App({ profile }: { profile: string | null }) {
   });
   const [muteInput, setMuteInput] = useState("");
   const [feedFilter, setFeedFilter] = useState<"global" | "following">("global");
-  const [queuedZaps, setQueuedZaps] = useState<QueuedZap[]>(() => loadQueuedZaps(profile));
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const postMediaInputRef = useRef<HTMLInputElement | null>(null);
   const loadingMoreRef = useRef(false);
@@ -137,11 +128,6 @@ function App({ profile }: { profile: string | null }) {
       localStorage.setItem(getStorageKey(BASE_MUTE_WORDS, profile), JSON.stringify(mutedWords));
     } catch (_) {}
   }, [mutedWords, profile]);
-  useEffect(() => {
-    try {
-      localStorage.setItem(getStorageKey(BASE_ZAP_QUEUE, profile), JSON.stringify(queuedZaps));
-    } catch (_) {}
-  }, [queuedZaps, profile]);
   useEffect(() => {
     try {
       localStorage.setItem(getStorageKey(BASE_DM_READ, profile), JSON.stringify(lastReadTimestamps));
@@ -349,6 +335,10 @@ function App({ profile }: { profile: string | null }) {
       .flatMap((e) => e.tags.filter((t) => t[0] === "e").map((t) => t[1]))
   );
   const hasBookmarked = (noteId: string) => bookmarkIds.has(noteId);
+
+  // ---- extracted feature hooks that read derived data (merge plan step 2) ----
+  const { flushQueuedZaps, handleBookmark, handleDelete, handleLike, handleReply, handleRepost, handleUnbookmark, handleZap, queuedZaps } = useNoteActions({ bookmarksEvent, canPublishToNetwork, effectivePrivKey, identities, networkEnabled, profile, pubkey, publishViaRelay, relayStatus, relayUrls, replyContent, replyingTo, selfPubkeys, setEvents, setReplyContent, setReplyingTo, setStatus });
+  const { editAbout, editBanner, editName, editPicture, editProfileOpen, handleEditProfileOpen, handleEditProfileSave, handlePostMediaUpload, postMediaUrls, setEditAbout, setEditBanner, setEditName, setEditPicture, setEditProfileOpen, setPostMediaUrls, uploadingMedia } = useProfileAndMedia({ actingIdentity, canPublishToNetwork, effectivePrivKey, myAbout, myBanner, myName, myPicture, networkEnabled, pubkey, publishViaRelay, setEvents, setProfiles, setStatus });
 
   const profileViewPubkey = viewingProfilePubkey ?? profileDisplayKey;
   const profileRootNotes = rootNotes.filter((n) => n.pubkey === profileViewPubkey);
@@ -844,314 +834,6 @@ function App({ profile }: { profile: string | null }) {
     setStatus("Posted");
     logger.logAction("post", "Posted note", { networkEnabled, contentLength: content.length, mediaCount: postMediaUrls.length });
   }, [effectivePrivKey, newPost, postMediaUrls, networkEnabled, canPublishToNetwork]);
-
-  const handleLike = useCallback(
-    async (note: NostrEvent) => {
-      if (!effectivePrivKey) return;
-      try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
-        const ev = await Nostr.finishEventAsync(
-          {
-            kind: 7,
-            content: "+",
-            tags: [
-              ["e", note.id],
-              ["p", note.pubkey],
-            ],
-            created_at: Math.floor(Date.now() / 1000),
-          },
-          sk
-        );
-        setEvents((prev) => [ev as NostrEvent, ...prev]);
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
-        setStatus("Liked");
-        logger.logAction("like", "Liked note", { noteId: note.id.slice(0, 8) + "…", networkEnabled });
-      } catch (e) {
-        setStatus("Like failed: " + (e instanceof Error ? e.message : String(e)));
-        logger.logError("Like failed", e, { noteId: note.id.slice(0, 8) + "…" });
-      }
-    },
-    [effectivePrivKey, networkEnabled, canPublishToNetwork]
-  );
-
-  const handleRepost = useCallback(
-    async (note: NostrEvent) => {
-      if (!effectivePrivKey) return;
-      try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
-        const ev = await Nostr.finishEventAsync(
-          {
-            kind: 6,
-            content: JSON.stringify(note),
-            tags: [
-              ["e", note.id],
-              ["p", note.pubkey],
-            ],
-            created_at: Math.floor(Date.now() / 1000),
-          },
-          sk
-        );
-        setEvents((prev) => [ev as NostrEvent, ...prev]);
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
-        setStatus("Reposted");
-      } catch (e) {
-        setStatus("Repost failed: " + (e instanceof Error ? e.message : String(e)));
-      }
-    },
-    [effectivePrivKey, networkEnabled, canPublishToNetwork]
-  );
-
-  const handleDelete = useCallback(
-    async (note: NostrEvent) => {
-      if (!selfPubkeys.includes(note.pubkey)) return;
-      const preview = note.content.length > 60 ? note.content.slice(0, 60) + "…" : note.content;
-      const warning = networkEnabled && canPublishToNetwork
-        ? "A deletion request will be published to relays; relays and other clients may still keep copies."
-        : "It will be removed from this device.";
-      if (!(await confirmDialog(`Delete this note?\n\n"${preview}"\n\n${warning}`))) return;
-      const identityForNote = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === note.pubkey);
-      const privToUse = identityForNote?.privKeyHex ?? effectivePrivKey;
-      try {
-        const sk = Nostr.hexToBytes(privToUse);
-        const ev = await Nostr.finishEventAsync(
-          {
-            kind: 5,
-            content: "",
-            tags: [["e", note.id]],
-            created_at: Math.floor(Date.now() / 1000),
-          },
-          sk
-        );
-        setEvents((prev) => [ev as NostrEvent, ...prev]);
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
-        setStatus("Note deleted");
-      } catch (e) {
-        setStatus("Delete failed: " + (e instanceof Error ? e.message : String(e)));
-      }
-    },
-    [effectivePrivKey, identities, selfPubkeys, networkEnabled, canPublishToNetwork]
-  );
-
-  const handleBookmark = useCallback(
-    async (note: NostrEvent) => {
-      if (!effectivePrivKey || !pubkey) return;
-      const existing = bookmarksEvent?.tags.filter((t) => t[0] === "e").map((t) => t[1]) ?? [];
-      if (existing.includes(note.id)) return;
-      try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
-        const newTags = [...existing.map((id) => ["e", id] as [string, string]), ["e", note.id]];
-        const ev = await Nostr.finishEventAsync(
-          { kind: 10003, content: "", tags: newTags, created_at: Math.floor(Date.now() / 1000) },
-          sk
-        );
-        setEvents((prev) => prev.filter((e) => !(e.kind === 10003 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
-        setStatus("Bookmarked");
-      } catch (e) {
-        setStatus("Bookmark failed: " + (e instanceof Error ? e.message : String(e)));
-      }
-    },
-    [effectivePrivKey, pubkey, networkEnabled, canPublishToNetwork, bookmarksEvent]
-  );
-
-  const handleUnbookmark = useCallback(
-    async (note: NostrEvent) => {
-      if (!effectivePrivKey || !pubkey) return;
-      const existing = bookmarksEvent?.tags.filter((t) => t[0] === "e").map((t) => t[1]) ?? [];
-      if (!existing.includes(note.id)) return;
-      try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
-        const newTags = existing.filter((id) => id !== note.id).map((id) => ["e", id] as [string, string]);
-        const ev = await Nostr.finishEventAsync(
-          { kind: 10003, content: "", tags: newTags, created_at: Math.floor(Date.now() / 1000) },
-          sk
-        );
-        setEvents((prev) => prev.filter((e) => !(e.kind === 10003 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
-        setStatus("Removed from bookmarks");
-      } catch (e) {
-        setStatus("Unbookmark failed: " + (e instanceof Error ? e.message : String(e)));
-      }
-    },
-    [effectivePrivKey, pubkey, networkEnabled, canPublishToNetwork, bookmarksEvent]
-  );
-
-  const getRootId = useCallback((note: NostrEvent): string => {
-    const eTag = note.tags.find((t) => t[0] === "e");
-    return eTag ? eTag[1] : note.id;
-  }, []);
-
-  const handleReply = useCallback(
-    async () => {
-      if (!effectivePrivKey || !replyingTo || !replyContent.trim()) return;
-      const rootId = getRootId(replyingTo);
-      try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
-        const tags: string[][] = [["e", rootId], ["e", replyingTo.id], ["p", replyingTo.pubkey]];
-        const ev = await Nostr.finishEventAsync(
-          {
-            kind: 1,
-            content: ensureStegstrSuffix(replyContent.trim()),
-            tags,
-            created_at: Math.floor(Date.now() / 1000),
-          },
-          sk
-        );
-        setEvents((prev) => [ev as NostrEvent, ...prev]);
-        setReplyingTo(null);
-        setReplyContent("");
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
-        setStatus("Replied");
-        logger.logAction("reply", "Replied to note", { rootId, networkEnabled });
-      } catch (e) {
-        setStatus("Reply failed: " + (e instanceof Error ? e.message : String(e)));
-        logger.logError("Reply failed", e, { rootId });
-      }
-    },
-    [effectivePrivKey, replyingTo, replyContent, networkEnabled, canPublishToNetwork, getRootId]
-  );
-
-  const openZapUrl = useCallback((url: string) => {
-    try {
-      window.open(url, "_blank", "noopener");
-    } catch (_) {}
-  }, []);
-
-  const flushQueuedZaps = useCallback(() => {
-    if (!networkEnabled || !canPublishToNetwork || queuedZaps.length === 0) return;
-    const pending = [...queuedZaps];
-    setQueuedZaps([]);
-    pending.forEach((zap) => {
-      try {
-        publishViaRelay(zap.event as NostrEvent);
-      } catch (_) {}
-      openZapUrl(zap.zapStreamUrl);
-    });
-    setStatus(pending.length === 1 ? "Queued zap sent" : `Queued zaps sent (${pending.length})`);
-  }, [networkEnabled, canPublishToNetwork, queuedZaps, relayUrls, openZapUrl]);
-
-  useEffect(() => {
-    if (!networkEnabled || !canPublishToNetwork || relayStatus !== "Synced") return;
-    if (queuedZaps.length === 0) return;
-    flushQueuedZaps();
-  }, [networkEnabled, canPublishToNetwork, relayStatus, queuedZaps.length, flushQueuedZaps]);
-
-  const handleZap = useCallback(
-    async (note: NostrEvent) => {
-      if (!effectivePrivKey) return;
-      if (!canPublishToNetwork) {
-        setStatus("Zaps require a Nostr identity");
-        return;
-      }
-      try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
-        const zapRequest = await Nostr.finishEventAsync(
-          {
-            kind: 9734,
-            content: "Zap request",
-            tags: [
-              ["e", note.id],
-              ["p", note.pubkey],
-              ["relays", ...relayUrls],
-            ],
-            created_at: Math.floor(Date.now() / 1000),
-          },
-          sk
-        );
-        const zapStreamUrl = `https://zap.stream/e/${note.id}`;
-        if (networkEnabled) {
-          publishViaRelay(zapRequest as NostrEvent);
-          openZapUrl(zapStreamUrl);
-          setStatus("Zap sent");
-        } else {
-          const queued: QueuedZap = {
-            id: zapRequest.id,
-            noteId: note.id,
-            event: zapRequest as NostrEvent,
-            createdAt: Date.now(),
-            zapStreamUrl,
-          };
-          setQueuedZaps((prev) => [...prev, queued]);
-          setStatus("Zap queued. Turn Network ON to send.");
-        }
-      } catch (e) {
-        setStatus("Zap failed: " + (e instanceof Error ? e.message : String(e)));
-      }
-    },
-    [effectivePrivKey, networkEnabled, canPublishToNetwork, relayUrls, openZapUrl]
-  );
-
-  const handleEditProfileOpen = useCallback(() => {
-    setEditName(myName);
-    setEditAbout(myAbout);
-    setEditPicture(myPicture ?? "");
-    setEditBanner(myBanner ?? "");
-    setEditProfileOpen(true);
-  }, [myName, myAbout, myPicture, myBanner]);
-
-  const handleEditProfileSave = useCallback(async () => {
-    if (!effectivePrivKey || !pubkey) return;
-    const sk = Nostr.hexToBytes(effectivePrivKey);
-    const content = JSON.stringify({
-      name: editName.trim() || undefined,
-      about: editAbout.trim() || undefined,
-      picture: editPicture.trim() || undefined,
-      banner: editBanner.trim() || undefined,
-    });
-    const ev = await Nostr.finishEventAsync(
-      {
-        kind: 0,
-        content,
-        tags: [],
-        created_at: Math.floor(Date.now() / 1000),
-      },
-      sk
-    );
-    setEvents((prev) => {
-      const byId = new Map(prev.map((e) => [e.id, e]));
-      byId.set(ev.id, ev as NostrEvent);
-      return Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
-    });
-    setProfiles((p) => ({
-      ...p,
-      [(ev as NostrEvent).pubkey]: {
-        name: editName.trim() || undefined,
-        about: editAbout.trim() || undefined,
-        picture: editPicture.trim() || undefined,
-        banner: editBanner.trim() || undefined,
-      },
-    }));
-    setEditProfileOpen(false);
-    // Never publish kind 0 for Nostr identities—their profile lives on Nostr; publishing would overwrite it
-    const isNostr = actingIdentity?.type === "nostr";
-    if (networkEnabled && canPublishToNetwork && !isNostr) publishViaRelay(ev as NostrEvent);
-    setStatus(isNostr ? "Profile updated (local only)" : "Profile updated");
-    logger.logAction("profile_edit", isNostr ? "Profile updated (local only)" : "Profile updated", { networkEnabled, isNostr });
-  }, [effectivePrivKey, pubkey, editName, editAbout, editPicture, editBanner, networkEnabled, canPublishToNetwork, actingIdentity?.type]);
-
-  const handlePostMediaUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files?.length) return;
-    e.target.value = "";
-    setUploadingMedia(true);
-    setStatus("Uploading…");
-    try {
-      const urls: string[] = [];
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        if (file.type.startsWith("image/") || file.type.startsWith("video/")) {
-          const url = await uploadMedia(file);
-          urls.push(url);
-        }
-      }
-      setPostMediaUrls((prev) => [...prev, ...urls]);
-      setStatus(urls.length ? `Uploaded ${urls.length} file(s)` : "Select image or video files");
-    } catch (err) {
-      setStatus("Upload failed: " + (err instanceof Error ? err.message : String(err)));
-    } finally {
-      setUploadingMedia(false);
-    }
-  }, []);
 
   const handleFollow = useCallback(
     async (theirPk: string) => {
