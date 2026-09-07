@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/calibrate.schema.json",
+  "$id": "https://raw.githubusercontent.com/brunkstr/Stegstr/main/schema/cli/calibrate.schema.json",
   "title": "stegstr-cli calibrate --json",
   "description": "Channel fingerprint inferred from a single --sent/--received pair. jpeg_quality/chroma_subsampling/progressive are null when --received isn't a JPEG (the tool measures what re-encoding did; a non-JPEG received file means no JPEG re-encode happened to measure). jpeg_quality_exact is true only when the recovered quantization table is a byte-exact match to the standard IJG scaling curve at that quality -- false means best-fit estimate, not a guess presented as fact (see jpeg_probe.rs). metadata_stripped is 'not_applicable...' (with exif/icc fields null) unless both sent and received are JPEG.",
   "oneOf": [
@@ -48,6 +48,6 @@
         "metadata_icc_stripped": { "type": ["boolean", "null"] }
       }
     },
-    { "$ref": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/error.schema.json" }
+    { "$ref": "https://raw.githubusercontent.com/brunkstr/Stegstr/main/schema/cli/error.schema.json" }
   ]
 }

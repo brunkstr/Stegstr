@@ -9,7 +9,7 @@ the original PNG-only encoder does not.
 Requires [Rust](https://rustup.rs) and git.
 
 ```bash
-git clone https://github.com/akifjanjua/Stegstr.git
+git clone https://github.com/brunkstr/Stegstr.git
 cd Stegstr/src-tauri && cargo build --release --bin stegstr-cli
 ```
 
@@ -42,7 +42,7 @@ and why.
 
 ## Links
 
-- [This fork](https://github.com/akifjanjua/Stegstr)
+- [Source](https://github.com/brunkstr/Stegstr)
 - [stegstr.com](https://stegstr.com) (upstream project's site; describes the original, non-robust default)
 - [CLI docs](https://www.stegstr.com/wiki/cli.html)
 - [For AI agents](https://www.stegstr.com/wiki/for-agents.html)

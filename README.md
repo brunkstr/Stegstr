@@ -10,11 +10,11 @@ No Rust, no Node, no build step. Pick your platform:
 
 | Platform | Download |
 |---|---|
-| Windows | [Stegstr-Windows.exe](https://github.com/akifjanjua/Stegstr/releases/latest/download/Stegstr-Windows.exe) (or [.msi](https://github.com/akifjanjua/Stegstr/releases/latest/download/Stegstr-Windows.msi)) |
-| macOS | [Stegstr-macOS.dmg](https://github.com/akifjanjua/Stegstr/releases/latest/download/Stegstr-macOS.dmg) |
-| Linux | [Stegstr-Linux.AppImage](https://github.com/akifjanjua/Stegstr/releases/latest/download/Stegstr-Linux.AppImage) (or [.deb](https://github.com/akifjanjua/Stegstr/releases/latest/download/Stegstr-Linux.deb)) |
+| Windows | [Stegstr-Windows.exe](https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-Windows.exe) (or [.msi](https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-Windows.msi)) |
+| macOS | [Stegstr-macOS.dmg](https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-macOS.dmg) |
+| Linux | [Stegstr-Linux.AppImage](https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-Linux.AppImage) (or [.deb](https://github.com/brunkstr/Stegstr/releases/latest/download/Stegstr-Linux.deb)) |
 
-All builds and the release itself run in [GitHub Actions from a clean clone](https://github.com/akifjanjua/Stegstr/actions/runs/33031749340), not a local machine. [`SHA256SUMS.txt`](https://github.com/akifjanjua/Stegstr/releases/latest/download/SHA256SUMS.txt) is in the release if you want to verify your download (`sha256sum -c SHA256SUMS.txt`, or `certutil -hashfile <file> SHA256` on Windows).
+All builds and the release itself run in [GitHub Actions from a clean clone](https://github.com/brunkstr/Stegstr/actions/runs/34164839089), not a local machine. [`SHA256SUMS.txt`](https://github.com/brunkstr/Stegstr/releases/latest/download/SHA256SUMS.txt) is in the release if you want to verify your download (`sha256sum -c SHA256SUMS.txt`, or `certutil -hashfile <file> SHA256` on Windows).
 
 **Verified before publishing, not just built:** the Windows download was installed and launched for real — an actual app window opened and stayed running — and the bundled CLI was round-tripped (embed → decode, byte-exact) before this link went out. **The Linux AppImage is checksum-verified and the correct size, but launching it was not tested** — this was built and verified from a Windows machine with no Linux environment available. If you're on Linux, you're the first real launch test; let us know if something's wrong.
 
@@ -137,7 +137,7 @@ If `npm test` reports a timeout waiting for a worker process to start, that's a 
 Prerequisites: Node.js 18+, Rust (latest stable).
 
 ```bash
-git clone https://github.com/akifjanjua/Stegstr.git
+git clone https://github.com/brunkstr/Stegstr.git
 cd Stegstr
 npm install
 npm run build:mac   # or build:win, build:linux
@@ -153,16 +153,16 @@ Binary: `target/release/stegstr-cli` (Windows: `stegstr-cli.exe`).
 
 ## Links
 
-- [Latest release](https://github.com/akifjanjua/Stegstr/releases/latest) — downloads for all platforms
+- [Latest release](https://github.com/brunkstr/Stegstr/releases/latest) — downloads for all platforms
 - [Robustness report](ROBUSTNESS_REPORT.md) — before/after numbers, live-platform confirmation, what wasn't tested
 - [Bugs found and fixed](BUGS.md) — 9 bugs (5 pre-existing upstream, 3 in this fork's own work, 1 that's neither), repro steps, root cause, fix, regression test each
 - [Evidence images](docs/evidence/) — visual proof of the image-destruction bug, upstream vs. fixed
 - [Agent skill](skill/stegstr/) — zero-human-input CLI/MCP workflow for AI agents, every command verified
 - [CLI JSON schemas](schema/cli/) — `--json` output shapes for every command
 - [What changed in this fork and why](ROBUSTNESS_PORT_NOTES.md)
-- [Website](https://stegstr.com) — Downloads, getting started, wiki (this is the original upstream project's site, not this fork's)
+- [Website](https://stegstr.com) — Downloads, getting started, wiki
 - [Wiki / CLI docs](https://stegstr.com/wiki/cli.html) — Full CLI reference
-- [This fork's source](https://github.com/akifjanjua/Stegstr)
+- [Source](https://github.com/brunkstr/Stegstr)
 
 ## License
 

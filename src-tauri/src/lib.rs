@@ -153,20 +153,118 @@ fn encode_stego_dot(cover_path: String, output_path: String, payload: String) ->
     }
 }
 
-/// Read a file's bytes for the TypeScript codecs (the desktop app embeds and
-/// detects with the same code as the web build; see docs/codecs.md).
-#[tauri::command]
-fn read_bytes(path: String) -> Result<Vec<u8>, String> {
-    let p = normalize_path(&path);
-    std::fs::read(p).map_err(|e| e.to_string())
+/// Scope for the webview's raw file access. The TypeScript codecs only ever
+/// need to read cover images and write stego images, so that is all the Rust
+/// side allows: the path must have an image extension, and the bytes must
+/// start with a JPEG or PNG signature. A compromised webview therefore cannot
+/// read keys or shell profiles through `read_bytes`, nor plant a script or
+/// overwrite a config file through `write_bytes`; the worst it can do is
+/// touch image files, which the user's own file dialog already exposes.
+const IMAGE_EXTENSIONS: [&str; 3] = ["jpg", "jpeg", "png"];
+
+fn has_image_extension(p: &std::path::Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
 }
 
-/// Write bytes produced by a TypeScript codec to a path the user chose in a save dialog.
+fn looks_like_image(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
+}
+
+fn check_image_path(p: &str) -> Result<std::path::PathBuf, String> {
+    let path = std::path::Path::new(p);
+    if !path.is_absolute() {
+        return Err("path must be absolute".to_string());
+    }
+    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err("path must not contain '..'".to_string());
+    }
+    if !has_image_extension(path) {
+        return Err("only .jpg, .jpeg and .png files can be read or written".to_string());
+    }
+    Ok(path.to_path_buf())
+}
+
+/// Read an image file's bytes for the TypeScript codecs (the desktop app embeds
+/// and detects with the same code as the web build; see docs/codecs.md).
+/// Refuses anything that is not an image by extension and by signature.
+#[tauri::command]
+fn read_bytes(path: String) -> Result<Vec<u8>, String> {
+    let p = check_image_path(normalize_path(&path))?;
+    let meta = std::fs::metadata(&p).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a regular file".to_string());
+    }
+    let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
+    if !looks_like_image(&bytes) {
+        return Err("file is not a JPEG or PNG image".to_string());
+    }
+    Ok(bytes)
+}
+
+/// Write an image produced by a TypeScript codec to a path the user chose in a
+/// save dialog. Refuses non-image paths and non-image bytes.
 #[tauri::command]
 fn write_bytes(path: String, data: Vec<u8>) -> Result<String, String> {
-    let p = normalize_path(&path);
+    let p = check_image_path(normalize_path(&path))?;
+    if !looks_like_image(&data) {
+        return Err("refusing to write: data is not a JPEG or PNG image".to_string());
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(&p) {
+        if !meta.is_file() {
+            return Err("refusing to overwrite: target is not a regular file".to_string());
+        }
+    }
     std::fs::write(&p, &data).map_err(|e| e.to_string())?;
-    Ok(p.to_string())
+    Ok(p.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod file_scope_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_non_image_paths() {
+        // temp_dir() is absolute on every platform (a drive-letter path on Windows).
+        let base = std::env::temp_dir();
+        let abs = |name: &str| base.join(name).to_string_lossy().into_owned();
+        assert!(check_image_path(&abs(".ssh/id_rsa")).is_err());
+        assert!(check_image_path(&abs(".bashrc")).is_err());
+        assert!(check_image_path(&abs("photo.jpg.sh")).is_err());
+        assert!(check_image_path("relative/photo.jpg").is_err());
+        assert!(check_image_path(&base.join("..").join("photo.png").to_string_lossy()).is_err());
+        assert!(check_image_path(&abs("Photo.JPG")).is_ok());
+        assert!(check_image_path(&abs("photo.jpeg")).is_ok());
+        assert!(check_image_path(&abs("photo.png")).is_ok());
+    }
+
+    #[test]
+    fn rejects_non_image_bytes() {
+        assert!(!looks_like_image(b"#!/bin/sh\necho hi"));
+        assert!(!looks_like_image(b""));
+        assert!(looks_like_image(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0]));
+        assert!(looks_like_image(b"\x89PNG\r\n\x1a\n....".as_slice()));
+    }
+
+    #[test]
+    fn read_and_write_are_scoped_end_to_end() {
+        let dir = std::env::temp_dir().join(format!("stegstr-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("evil.sh");
+        std::fs::write(&script, b"#!/bin/sh\n").unwrap();
+        assert!(read_bytes(script.to_string_lossy().into_owned()).is_err());
+        let fake = dir.join("fake.jpg");
+        std::fs::write(&fake, b"not an image").unwrap();
+        assert!(read_bytes(fake.to_string_lossy().into_owned()).is_err());
+        assert!(write_bytes(dir.join("x.sh").to_string_lossy().into_owned(), vec![0xFF, 0xD8, 0xFF]).is_err());
+        assert!(write_bytes(dir.join("x.jpg").to_string_lossy().into_owned(), b"echo".to_vec()).is_err());
+        let ok = dir.join("ok.jpg");
+        assert!(write_bytes(ok.to_string_lossy().into_owned(), vec![0xFF, 0xD8, 0xFF, 0xD9]).is_ok());
+        assert_eq!(read_bytes(ok.to_string_lossy().into_owned()).unwrap(), vec![0xFF, 0xD8, 0xFF, 0xD9]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[tauri::command]

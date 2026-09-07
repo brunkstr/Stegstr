@@ -9,7 +9,7 @@ install:
     - Rust (latest stable) - https://rustup.rs
     - Git
   steps: |
-    1. git clone https://github.com/akifjanjua/Stegstr.git
+    1. git clone https://github.com/brunkstr/Stegstr.git
     2. cd Stegstr/src-tauri && cargo build --release --bin stegstr-cli
     3. Binary: target/release/stegstr-cli (Windows: stegstr-cli.exe)
 permissions:
@@ -17,7 +17,7 @@ permissions:
 metadata:
   homepage: https://stegstr.com
   for-agents: https://www.stegstr.com/wiki/for-agents.html
-  repo: https://github.com/akifjanjua/Stegstr
+  repo: https://github.com/brunkstr/Stegstr
 ---
 
 # Stegstr
@@ -74,7 +74,7 @@ stegstr-cli post "your message" --json
 Build the CLI from the Stegstr repo:
 
 ```bash
-git clone https://github.com/akifjanjua/Stegstr.git
+git clone https://github.com/brunkstr/Stegstr.git
 cd Stegstr/src-tauri
 cargo build --release --bin stegstr-cli
 ```
@@ -280,11 +280,11 @@ Two encoders, selected by the `--robust` flag on `embed` (decode/detect auto-det
 - **Length:** 4 bytes, big-endian
 - **Payload:** UTF-8 JSON or raw bytes (desktop app encrypts; CLI can embed raw or `--encrypt`)
 
-Decrypted bundle: `{ "version": 1, "events": [ ... Nostr events ... ] }`. Schema: [bundle.schema.json](https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/bundle.schema.json).
+Decrypted bundle: `{ "version": 1, "events": [ ... Nostr events ... ] }`. Schema: [bundle.schema.json](https://raw.githubusercontent.com/brunkstr/Stegstr/main/schema/bundle.schema.json).
 
 ## Links
 
-- **This fork:** https://github.com/akifjanjua/Stegstr
+- **Source:** https://github.com/brunkstr/Stegstr
 - **What changed and why:** [`ROBUSTNESS_PORT_NOTES.md`](../../ROBUSTNESS_PORT_NOTES.md) in the repo root
 - **CLI JSON schemas:** [`schema/cli/`](../../schema/cli/) in the repo root
 - **agents.txt:** https://www.stegstr.com/agents.txt (upstream project's site, describes the original,
