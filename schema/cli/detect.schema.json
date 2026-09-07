@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/detect.schema.json",
+  "$id": "https://raw.githubusercontent.com/brunkstr/Stegstr/main/schema/cli/detect.schema.json",
   "title": "stegstr-cli detect --json",
   "oneOf": [
     {
@@ -16,6 +16,6 @@
         }
       }
     },
-    { "$ref": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/error.schema.json" }
+    { "$ref": "https://raw.githubusercontent.com/brunkstr/Stegstr/main/schema/cli/error.schema.json" }
   ]
 }

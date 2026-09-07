@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/error.schema.json",
+  "$id": "https://raw.githubusercontent.com/brunkstr/Stegstr/main/schema/cli/error.schema.json",
   "title": "Stegstr CLI error envelope",
   "description": "Emitted on stdout by every stegstr-cli command when run with --json and the command fails. The exit code always reflects error.kind regardless of --json -- see README.md's 'Exit codes' table for the kind -> code mapping.",
   "type": "object",

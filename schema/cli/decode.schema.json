@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/decode.schema.json",
+  "$id": "https://raw.githubusercontent.com/brunkstr/Stegstr/main/schema/cli/decode.schema.json",
   "title": "stegstr-cli decode --json",
   "oneOf": [
     {
@@ -18,6 +18,6 @@
         "payload_encoding": { "type": "string", "enum": ["utf8", "base64"] }
       }
     },
-    { "$ref": "https://raw.githubusercontent.com/akifjanjua/Stegstr/main/schema/cli/error.schema.json" }
+    { "$ref": "https://raw.githubusercontent.com/brunkstr/Stegstr/main/schema/cli/error.schema.json" }
   ]
 }

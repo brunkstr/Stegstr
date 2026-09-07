@@ -2,16 +2,18 @@
 # Install stegstr-cli from source. Requires Rust (rustup) and git.
 set -e
 
-REPO_URL="${STEGSTR_REPO_URL:-https://github.com/akifjanjua/Stegstr.git}"
+REPO_URL="${STEGSTR_REPO_URL:-https://github.com/brunkstr/Stegstr.git}"
+# Pinned to a release tag so an install builds known code, not whatever main holds today.
+REPO_REF="${STEGSTR_REF:-v0.2.0}"
 INSTALL_DIR="${STEGSTR_INSTALL_DIR:-$HOME/.local/stegstr}"
 BIN_DIR="${STEGSTR_BIN_DIR:-$HOME/.local/bin}"
 
 echo "Cloning Stegstr..."
 mkdir -p "$(dirname "$INSTALL_DIR")"
 if [ -d "$INSTALL_DIR" ]; then
-  (cd "$INSTALL_DIR" && git pull)
+  (cd "$INSTALL_DIR" && git fetch --tags origin && git checkout -q "$REPO_REF")
 else
-  git clone "$REPO_URL" "$INSTALL_DIR"
+  git clone --branch "$REPO_REF" --depth 1 "$REPO_URL" "$INSTALL_DIR"
 fi
 
 echo "Building stegstr-cli..."
