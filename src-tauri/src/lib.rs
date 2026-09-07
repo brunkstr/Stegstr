@@ -166,7 +166,7 @@ fn read_bytes(path: String) -> Result<Vec<u8>, String> {
 fn write_bytes(path: String, data: Vec<u8>) -> Result<String, String> {
     let p = normalize_path(&path);
     std::fs::write(&p, &data).map_err(|e| e.to_string())?;
-    Ok(p.to_string_lossy().to_string())
+    Ok(p.to_string())
 }
 
 #[tauri::command]
