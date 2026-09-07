@@ -30,6 +30,19 @@ dist-ssr
 website/
 stegstr-website.zip
 
-# Python (channel_simulator/)
+# The bundled CLI is committed on purpose: the contest gauntlet builds entries
+# in a container with no network, so `npm install` cannot run there. The bundle
+# has no runtime dependencies, so `node dist-cli/stegstr.mjs` works from a bare
+# clone. Sample stego images are committed for the same reason.
+
+# Contest packaging artifacts, not part of the source
+entry-images/
+Stegstr-entry.zip
+READ-ME-FIRST.md
+ENTRY-TEXT.md
+REPLY-TO-CLIENT.txt
+testkit/returned/
+robust_lab/covers/
+
 __pycache__/
 *.pyc

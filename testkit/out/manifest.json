@@ -1,0 +1,50 @@
+[
+  {
+    "file": "foliage-locator.jpg",
+    "mode": "locator",
+    "expected": "stegstr|foliage|locator",
+    "verifiedAtBuild": true
+  },
+  {
+    "file": "foliage-standard.jpg",
+    "mode": "standard",
+    "expected": "stegstr-testkit|foliage|standard|the quick brown fox jumps over the lazy dog",
+    "verifiedAtBuild": true
+  },
+  {
+    "file": "landscape-locator.jpg",
+    "mode": "locator",
+    "expected": "stegstr|landscape|locator",
+    "verifiedAtBuild": true
+  },
+  {
+    "file": "landscape-standard.jpg",
+    "mode": "standard",
+    "expected": "stegstr-testkit|landscape|standard|the quick brown fox jumps over the lazy dog",
+    "verifiedAtBuild": true
+  },
+  {
+    "file": "night-locator.jpg",
+    "mode": "locator",
+    "expected": "stegstr|night|locator",
+    "verifiedAtBuild": true
+  },
+  {
+    "file": "night-standard.jpg",
+    "mode": "standard",
+    "expected": "stegstr-testkit|night|standard|the quick brown fox jumps over the lazy dog",
+    "verifiedAtBuild": true
+  },
+  {
+    "file": "portrait-locator.jpg",
+    "mode": "locator",
+    "expected": "stegstr|portrait|locator",
+    "verifiedAtBuild": true
+  },
+  {
+    "file": "portrait-standard.jpg",
+    "mode": "standard",
+    "expected": "stegstr-testkit|portrait|standard|the quick brown fox jumps over the lazy dog",
+    "verifiedAtBuild": true
+  }
+]

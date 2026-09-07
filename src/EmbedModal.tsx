@@ -2,10 +2,11 @@ import { useState, useEffect } from "react";
 import * as Nostr from "./nostr-stub";
 import { isWeb, pickImageFile } from "./platform-web";
 import { PLATFORM_WIDTHS, getQimCapacityForFile } from "./stego-qim";
+import { MODES, MODE_LABELS, getStdmCapacityForFile, payloadBytes, type ModeName } from "./stego-stdm-web";
 import { getDotCapacityForFile } from "./stego-dot-web";
 import type { ProfileData } from "./types";
 
-export type StegoMethod = "qim" | "dot";
+export type StegoMethod = "robust" | "qim" | "dot";
 
 const PLATFORM_LABELS: Record<string, string> = {
   instagram: "Instagram (1080px)",
@@ -36,6 +37,8 @@ export interface EmbedModalProps {
   onStegoMethodChange: (method: StegoMethod) => void;
   targetPlatform: string;
   onTargetPlatformChange: (platform: string) => void;
+  stegoMode: ModeName;
+  onStegoModeChange: (mode: ModeName) => void;
 }
 
 export function EmbedModal({
@@ -56,6 +59,8 @@ export function EmbedModal({
   onStegoMethodChange,
   targetPlatform,
   onTargetPlatformChange,
+  stegoMode,
+  onStegoModeChange,
 }: EmbedModalProps) {
   const [capacityInfo, setCapacityInfo] = useState<string>("");
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -68,7 +73,16 @@ export function EmbedModal({
     let cancelled = false;
     (async () => {
       try {
-        if (stegoMethod === "qim") {
+        if (stegoMethod === "robust") {
+          const info = await getStdmCapacityForFile(embedCoverFile, stegoMode);
+          if (!cancelled) {
+            setCapacityInfo(
+              info.usable
+                ? `Capacity: ${info.capacityBytes} bytes (${info.width}x${info.height})`
+                : `Image too small for this mode: shortest edge is ${Math.min(info.width, info.height)}px, needs ${info.minEdge}px`,
+            );
+          }
+        } else if (stegoMethod === "qim") {
           const info = await getQimCapacityForFile(embedCoverFile, targetPlatform);
           if (!cancelled) {
             setCapacityInfo(
@@ -86,7 +100,7 @@ export function EmbedModal({
       }
     })();
     return () => { cancelled = true; };
-  }, [embedCoverFile, stegoMethod, targetPlatform]);
+  }, [embedCoverFile, stegoMethod, targetPlatform, stegoMode]);
 
   const addRecipient = () => {
     const raw = recipientInput.trim();
@@ -188,8 +202,12 @@ export function EmbedModal({
               <label className="embed-section-label">Encoding method:</label>
               <div style={{ display: "flex", gap: "1rem" }}>
                 <label style={{ cursor: "pointer" }}>
+                  <input type="radio" name="stego-method" checked={stegoMethod === "robust"} onChange={() => onStegoMethodChange("robust")} />
+                  {" "}Robust (JPEG, survives resizing)
+                </label>
+                <label style={{ cursor: "pointer" }}>
                   <input type="radio" name="stego-method" checked={stegoMethod === "qim"} onChange={() => onStegoMethodChange("qim")} />
-                  {" "}QIM (JPEG, robust)
+                  {" "}QIM (JPEG, platform-targeted)
                 </label>
                 <label style={{ cursor: "pointer" }}>
                   <input type="radio" name="stego-method" checked={stegoMethod === "dot"} onChange={() => onStegoMethodChange("dot")} />
@@ -197,6 +215,21 @@ export function EmbedModal({
                 </label>
               </div>
             </div>
+
+            {/* Payload mode (Robust only) */}
+            {stegoMethod === "robust" && (
+              <div className="embed-mode-selector" style={{ marginTop: "0.5rem" }}>
+                <label className="embed-section-label">Payload mode:</label>
+                <select value={stegoMode} onChange={(e) => onStegoModeChange(e.target.value as ModeName)}>
+                  {(Object.keys(MODES) as ModeName[]).map((key) => (
+                    <option key={key} value={key}>
+                      {MODE_LABELS[key].title} - {payloadBytes(MODES[key])} bytes
+                    </option>
+                  ))}
+                </select>
+                <p className="muted" style={{ fontSize: "0.8rem", marginTop: "0.25rem" }}>{MODE_LABELS[stegoMode].detail}</p>
+              </div>
+            )}
 
             {/* Platform selector (QIM only) */}
             {stegoMethod === "qim" && (

@@ -8,7 +8,7 @@
  * claiming success. Adding a method is adding a module here — see docs/codecs.md.
  */
 
-export type CodecId = "qim" | "dot" | (string & {});
+export type CodecId = "robust" | "qim" | "dot" | (string & {});
 
 export interface CodecDecodeResult {
   ok: boolean;

@@ -153,6 +153,22 @@ fn encode_stego_dot(cover_path: String, output_path: String, payload: String) ->
     }
 }
 
+/// Read a file's bytes for the TypeScript codecs (the desktop app embeds and
+/// detects with the same code as the web build; see docs/codecs.md).
+#[tauri::command]
+fn read_bytes(path: String) -> Result<Vec<u8>, String> {
+    let p = normalize_path(&path);
+    std::fs::read(p).map_err(|e| e.to_string())
+}
+
+/// Write bytes produced by a TypeScript codec to a path the user chose in a save dialog.
+#[tauri::command]
+fn write_bytes(path: String, data: Vec<u8>) -> Result<String, String> {
+    let p = normalize_path(&path);
+    std::fs::write(&p, &data).map_err(|e| e.to_string())?;
+    Ok(p.to_string())
+}
+
 #[tauri::command]
 fn check_png_signature(path: String) -> Result<bool, String> {
     let p = normalize_path(&path);
@@ -334,6 +350,8 @@ pub fn run() {
             get_dot_capacity,
             get_qim_capacity,
             check_png_signature,
+            read_bytes,
+            write_bytes,
             decode_stego_qim,
             encode_stego_qim,
             get_desktop_path,
