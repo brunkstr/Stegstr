@@ -102,9 +102,9 @@ export function FeedView({
   };
   const chipLabel = (a: PaymentAttachment) => {
     try {
-      if (a.type === "bolt11") { const d = decodeInvoice(a.value); return `⚡ ${formatSats(d.amountSat)}${d.description ? " · " + d.description : ""}`; }
-      const t = decodeToken(a.value); return `🥜 ${t.amount} ${t.unit}`;
-    } catch { return a.type === "bolt11" ? "⚡ invoice" : "🥜 ecash"; }
+      if (a.type === "bolt11") { const d = decodeInvoice(a.value); return `Lightning ${formatSats(d.amountSat)}${d.description ? " · " + d.description : ""}`; }
+      const t = decodeToken(a.value); return `Ecash ${t.amount} ${t.unit}`;
+    } catch { return a.type === "bolt11" ? "Lightning invoice" : "Ecash"; }
   };
   return (
     <>
@@ -166,8 +166,8 @@ export function FeedView({
             <button type="button" className="btn-secondary" onClick={() => postMediaInputRef.current?.click()} disabled={uploadingMedia} title="Add photo or video">
               {uploadingMedia ? "Uploading…" : "Attach"}
             </button>
-            <button type="button" className="btn-secondary" onClick={() => setPayForm(payForm === "invoice" ? "none" : "invoice")} disabled={!walletConnected} title={walletConnected ? "Add a Lightning invoice readers can pay" : "Connect a Lightning wallet in Settings first"}>⚡ Request sats</button>
-            <button type="button" className="btn-secondary" onClick={() => setPayForm(payForm === "cashu" ? "none" : "cashu")} title="Attach a Cashu ecash token">🥜 Attach ecash</button>
+            <button type="button" className="btn-secondary" onClick={() => setPayForm(payForm === "invoice" ? "none" : "invoice")} disabled={!walletConnected} title={walletConnected ? "Add a Lightning invoice readers can pay" : "Connect a Lightning wallet in Settings first"}>Request sats</button>
+            <button type="button" className="btn-secondary" onClick={() => setPayForm(payForm === "cashu" ? "none" : "cashu")} title="Attach a Cashu ecash token">Attach ecash</button>
             <button type="button" onClick={handlePost} className="btn-primary" disabled={(!newPost.trim() && postMediaUrls.length === 0 && postPayments.length === 0) || uploadingMedia}>Post</button>
           </div>
           <p className="muted char-counter">{newPost.length}/{MAX_NOTE_USER_CONTENT} (appends &quot; Sent by Stegstr.&quot;)</p>
