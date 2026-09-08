@@ -155,7 +155,8 @@ export function FeedView({
           )}
           {payForm === "cashu" && (
             <div className="compose-payment-form">
-              <textarea placeholder="Paste a Cashu token (cashuA… or cashuB…) from your ecash wallet. Whoever redeems it first gets it." value={cashuInput} onChange={(e) => setCashuInput(e.target.value)} aria-label="Cashu token" />
+              <p className="muted" style={{ width: "100%", margin: 0 }}>Ecash on a post is first come, first served: anyone who sees the post, or detects the image it is hidden in, can take it, and only the first one gets it. To pay one particular person, use Request sats or send them a Lightning invoice instead.</p>
+              <textarea placeholder="Paste a Cashu token (cashuA… or cashuB…) from your ecash wallet" value={cashuInput} onChange={(e) => setCashuInput(e.target.value)} aria-label="Cashu token" />
               <button type="button" className="btn-secondary" onClick={addCashu}>Add ecash</button>
               <button type="button" className="btn-secondary" onClick={() => { setPayForm("none"); setPayError(null); }}>Cancel</button>
             </div>
@@ -167,7 +168,7 @@ export function FeedView({
               {uploadingMedia ? "Uploading…" : "Attach"}
             </button>
             <button type="button" className="btn-secondary" onClick={() => setPayForm(payForm === "invoice" ? "none" : "invoice")} disabled={!walletConnected} title={walletConnected ? "Add a Lightning invoice readers can pay" : "Connect a Lightning wallet in Settings first"}>Request sats</button>
-            <button type="button" className="btn-secondary" onClick={() => setPayForm(payForm === "cashu" ? "none" : "cashu")} title="Attach a Cashu ecash token">Attach ecash</button>
+            <button type="button" className="btn-secondary" onClick={() => setPayForm(payForm === "cashu" ? "none" : "cashu")} title="Attach a Cashu ecash token: first to redeem keeps it">Attach ecash</button>
             <button type="button" onClick={handlePost} className="btn-primary" disabled={(!newPost.trim() && postMediaUrls.length === 0 && postPayments.length === 0) || uploadingMedia}>Post</button>
           </div>
           <p className="muted char-counter">{newPost.length}/{MAX_NOTE_USER_CONTENT} (appends &quot; Sent by Stegstr.&quot;)</p>
