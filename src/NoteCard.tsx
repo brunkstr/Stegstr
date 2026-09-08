@@ -168,7 +168,7 @@ function NotePayments({ event: ev, wallet }: { event: NostrEvent; wallet?: NoteC
         if (a.type === "bolt11") {
           let label = "Lightning invoice", detail = "";
           let expired = false;
-          try { const d = decodeInvoice(a.value); label = `⚡ ${formatSats(d.amountSat)}`; detail = d.description ?? ""; expired = invoiceExpired(d); } catch { detail = "unreadable invoice"; }
+          try { const d = decodeInvoice(a.value); label = `Lightning ${formatSats(d.amountSat)}`; detail = d.description ?? ""; expired = invoiceExpired(d); } catch { detail = "unreadable invoice"; }
           return (
             <div className="note-payment" key={"b" + a.value.slice(-24)}>
               <span className="note-payment-kind">{label}</span>
@@ -181,8 +181,8 @@ function NotePayments({ event: ev, wallet }: { event: NostrEvent; wallet?: NoteC
             </div>
           );
         }
-        let label = "🥜 Ecash", detail = "";
-        try { const t = decodeToken(a.value); label = `🥜 ${t.amount.toLocaleString()} ${t.unit}`; detail = `${t.memo ? t.memo + " · " : ""}${mintHost(t.mint)}`; } catch { detail = "unreadable token"; }
+        let label = "Ecash", detail = "";
+        try { const t = decodeToken(a.value); label = `Ecash ${t.amount.toLocaleString()} ${t.unit}`; detail = `${t.memo ? t.memo + " · " : ""}${mintHost(t.mint)}`; } catch { detail = "unreadable token"; }
         return (
           <div className="note-payment" key={"c" + a.value.slice(-24)}>
             <span className="note-payment-kind">{label}</span>
