@@ -32,4 +32,6 @@ export type ProfileData = {
   picture?: string;
   banner?: string;
   nip05?: string;
+  /** Lightning address (LUD-16), used for zaps through the connected wallet. */
+  lud16?: string;
 };

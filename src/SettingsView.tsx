@@ -1,6 +1,7 @@
 import { useState } from "react";
 import * as Nostr from "./nostr-stub";
 import type { IdentityEntry, ProfileData } from "./types";
+import type { WalletApi } from "./app/useWallet";
 
 export interface SettingsViewProps {
   identities: IdentityEntry[];
@@ -21,13 +22,22 @@ export interface SettingsViewProps {
   referralCode: string | null;
   /** Store a new code (any form: bare, URL) or clear it with null. Returns the canonical code or null. */
   setReferralCode: (input: string | null) => string | null;
+  /** Lightning wallet (Nostr Wallet Connect). */
+  wallet: WalletApi;
 }
 
 export function SettingsView({
   identities, profiles, relayUrls, setRelayUrls, newRelayUrl, setNewRelayUrl,
   muteInput, setMuteInput, mutedPubkeys, setMutedPubkeys, mutedWords, setMutedWords,
-  resolvePubkeyFromInput, onStatus, referralCode, setReferralCode,
+  resolvePubkeyFromInput, onStatus, referralCode, setReferralCode, wallet,
 }: SettingsViewProps) {
+  const [nwcInput, setNwcInput] = useState("");
+  const [zapInput, setZapInput] = useState(String(wallet.zapSats));
+  const handleConnectWallet = async () => {
+    if (!nwcInput.trim()) return;
+    const ok = await wallet.connect(nwcInput.trim());
+    if (ok) setNwcInput("");
+  };
   const [referralInput, setReferralInput] = useState("");
   const handleSaveReferral = () => {
     if (!referralInput.trim()) return;
@@ -99,6 +109,47 @@ export function SettingsView({
           );
         })}
       </ul>
+      <h3 className="settings-section">
+        Lightning wallet
+        <span className="info-icon" tabIndex={0} data-tooltip="Nostr Wallet Connect lets Stegstr pay and create Lightning invoices through a wallet you already have. The wallet keeps the money and its own spending limit; Stegstr only keeps the connection string.">ⓘ</span>
+      </h3>
+      {wallet.connected ? (
+        <>
+          <div className="wallet-status">
+            <span className="ok">Connected{wallet.alias ? `: ${wallet.alias}` : ""}</span>
+            <span className="muted">{wallet.balanceSat === null ? "balance unknown" : `${wallet.balanceSat.toLocaleString()} sats`}</span>
+            {wallet.lud16 && <span className="muted">receive at {wallet.lud16}</span>}
+            <button type="button" className="btn-secondary" onClick={() => void wallet.refreshBalance()}>Refresh</button>
+            <button type="button" className="btn-delete muted" onClick={wallet.disconnect}>Disconnect</button>
+          </div>
+          {wallet.error && <p className="muted" style={{ color: "#c33" }}>{wallet.error}</p>}
+        </>
+      ) : (
+        <>
+          <p className="muted">Paste a connection string from a wallet that supports Nostr Wallet Connect (Alby Hub, Coinos, Primal, Zeus and others). It starts with <code>nostr+walletconnect://</code>. Give it a spending limit in the wallet.</p>
+          <div className="mute-add-wrap">
+            <input
+              type="password"
+              value={nwcInput}
+              onChange={(e) => setNwcInput(e.target.value)}
+              placeholder="nostr+walletconnect://…"
+              aria-label="Wallet connection string"
+              autoComplete="off"
+              onKeyDown={(e) => { if (e.key === "Enter" && nwcInput.trim()) void handleConnectWallet(); }}
+            />
+            <button type="button" className="btn-secondary" onClick={() => void handleConnectWallet()} disabled={!nwcInput.trim() || wallet.status === "connecting"}>
+              {wallet.status === "connecting" ? "Connecting…" : "Connect"}
+            </button>
+          </div>
+          {wallet.status === "error" && wallet.error && <p className="muted" style={{ color: "#c33" }}>{wallet.error}</p>}
+        </>
+      )}
+      <div className="wallet-status">
+        <label className="muted" htmlFor="zap-sats">Zap amount</label>
+        <input id="zap-sats" type="number" min={1} step={1} value={zapInput} onChange={(e) => setZapInput(e.target.value)} onBlur={() => { const n = Number(zapInput); if (Number.isInteger(n) && n > 0) wallet.setZapSats(n); else setZapInput(String(wallet.zapSats)); }} style={{ width: "6rem" }} />
+        <span className="muted">sats per zap, paid through the wallet when the author has a Lightning address</span>
+      </div>
+      <p className="muted">Ecash: notes can carry Cashu tokens. With a wallet connected you can redeem them straight into it; without one, copy the token into a Cashu wallet such as cashu.me or Minibits.</p>
       <h3 className="settings-section">
         Referral code
         <span className="info-icon" tabIndex={0} data-tooltip="If someone invited you to Stegstr with a link or QR code, enter their code here so their invitation counts in the publicity contest.">ⓘ</span>
