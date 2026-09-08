@@ -192,8 +192,8 @@ export function useStego(deps: StegoDeps) {
         const profileUpdates: Record<string, ProfileData> = {};
         bundle.events.filter((e) => e.kind === 0).forEach((e) => {
           try {
-            const c = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
-            profileUpdates[e.pubkey] = { name: c.name ?? c.display_name, about: c.about, picture: c.picture, banner: c.banner, nip05: c.nip05 };
+            const c = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string ; lud16?: string };
+            profileUpdates[e.pubkey] = { name: c.name ?? c.display_name, about: c.about, picture: c.picture, banner: c.banner, nip05: c.nip05, lud16: typeof c.lud16 === "string" ? c.lud16 : undefined };
           } catch (_) {}
         });
         if (Object.keys(profileUpdates).length > 0) setProfiles((p) => ({ ...p, ...profileUpdates }));
@@ -347,13 +347,14 @@ export function useStego(deps: StegoDeps) {
       const profileUpdates: Record<string, ProfileData> = {};
       bundle.events.filter((e) => e.kind === 0).forEach((e) => {
         try {
-          const raw = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
+          const raw = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string; lud16?: string };
           profileUpdates[e.pubkey] = {
             name: raw.name ?? raw.display_name,
             about: raw.about,
             picture: raw.picture,
             banner: raw.banner,
             nip05: raw.nip05,
+              lud16: typeof raw.lud16 === "string" ? raw.lud16 : undefined,
           };
         } catch (_) {}
       });

@@ -1,4 +1,8 @@
 import { extractImageUrls, mediaUrlsFromTags, isVideoUrl, contentWithoutImages } from "./utils";
+import { paymentAttachmentsFromEvent, contentWithoutPayments } from "./wallet/attachments";
+import { decodeInvoice, formatSats, invoiceExpired } from "./wallet/bolt11";
+import { decodeToken, mintHost } from "./wallet/cashu";
+import type { PaymentState } from "./app/useWallet";
 import { MAX_NOTE_USER_CONTENT } from "./constants";
 import type { NostrEvent, ProfileData } from "./types";
 
@@ -12,6 +16,16 @@ export interface NoteCardActions {
   onBookmark?: (ev: NostrEvent) => void;
   onUnbookmark?: (ev: NostrEvent) => void;
   onDelete?: (ev: NostrEvent) => void;
+  /** Lightning / ecash actions; omit to render payment attachments read-only. */
+  wallet?: NoteCardWallet;
+}
+
+export interface NoteCardWallet {
+  connected: boolean;
+  states: Record<string, PaymentState>;
+  onPayInvoice: (invoice: string) => void;
+  onRedeemCashu: (token: string) => void;
+  onCheckCashu: (token: string) => void;
 }
 
 /** Read-only helpers for rendering state. */
@@ -69,7 +83,7 @@ export function NoteCard({
   const displayName = profile?.name ?? `${ev.pubkey.slice(0, 8)}…`;
   const likeCount = getLikeCount(ev.id);
 
-  const textContent = contentWithoutImages(ev.content).trim() || ev.content.trim();
+  const textContent = contentWithoutPayments(contentWithoutImages(ev.content)).trim() || contentWithoutPayments(ev.content).trim();
   const displayText = contentMaxChars > 0 && textContent.length > contentMaxChars
     ? textContent.slice(0, contentMaxChars) + "…"
     : textContent;
@@ -103,6 +117,7 @@ export function NoteCard({
         <div className={`note-content${contentMaxChars > 0 ? " note-content-preview" : ""}`}>
           {displayText && <p>{displayText}</p>}
           {showMedia && <NoteMedia event={ev} />}
+          <NotePayments event={ev} wallet={actions.wallet} />
         </div>
         {showActions && (
           <NoteActions
@@ -135,6 +150,54 @@ function NoteMedia({ event: ev }: { event: NostrEvent }) {
           <img key={i} src={url} alt="" className="note-img" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.display = "none"; }} />
         )
       )}
+    </div>
+  );
+}
+
+/** Lightning invoices and Cashu ecash tokens carried by the note, as cards with actions. */
+function NotePayments({ event: ev, wallet }: { event: NostrEvent; wallet?: NoteCardWallet }) {
+  const items = paymentAttachmentsFromEvent(ev);
+  if (items.length === 0) return null;
+  const copy = (text: string) => { try { void navigator.clipboard?.writeText(text); } catch { /* clipboard unavailable */ } };
+  return (
+    <div className="note-payments" onClick={(e) => e.stopPropagation()}>
+      {items.map((a) => {
+        const st = wallet?.states[a.value];
+        const statusEl = st ? <span className={`note-payment-status${st.status === "error" ? " err" : ""}`}>{st.detail}</span> : null;
+        const working = st?.status === "working";
+        if (a.type === "bolt11") {
+          let label = "Lightning invoice", detail = "";
+          let expired = false;
+          try { const d = decodeInvoice(a.value); label = `⚡ ${formatSats(d.amountSat)}`; detail = d.description ?? ""; expired = invoiceExpired(d); } catch { detail = "unreadable invoice"; }
+          return (
+            <div className="note-payment" key={"b" + a.value.slice(-24)}>
+              <span className="note-payment-kind">{label}</span>
+              <span className="note-payment-detail" title={detail}>{expired ? "expired" : detail || "Lightning invoice"}</span>
+              {statusEl}
+              {wallet?.connected && st?.status !== "done" && !expired && (
+                <button type="button" className="btn-secondary" disabled={working} onClick={() => wallet.onPayInvoice(a.value)}>Pay</button>
+              )}
+              <button type="button" className="btn-secondary" onClick={() => copy(a.value)} title="Copy invoice">Copy</button>
+            </div>
+          );
+        }
+        let label = "🥜 Ecash", detail = "";
+        try { const t = decodeToken(a.value); label = `🥜 ${t.amount.toLocaleString()} ${t.unit}`; detail = `${t.memo ? t.memo + " · " : ""}${mintHost(t.mint)}`; } catch { detail = "unreadable token"; }
+        return (
+          <div className="note-payment" key={"c" + a.value.slice(-24)}>
+            <span className="note-payment-kind">{label}</span>
+            <span className="note-payment-detail" title={detail}>{detail}</span>
+            {statusEl}
+            {wallet && st?.status !== "done" && (
+              <button type="button" className="btn-secondary" disabled={working} onClick={() => wallet.onCheckCashu(a.value)} title="Ask the mint whether this token is still spendable">Check</button>
+            )}
+            {wallet?.connected && st?.status !== "done" && (
+              <button type="button" className="btn-secondary" disabled={working} onClick={() => wallet.onRedeemCashu(a.value)} title="Move the ecash into your Lightning wallet">Redeem</button>
+            )}
+            <button type="button" className="btn-secondary" onClick={() => copy(a.value)} title="Copy token (paste into a Cashu wallet)">Copy</button>
+          </div>
+        );
+      })}
     </div>
   );
 }

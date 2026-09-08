@@ -1046,3 +1046,23 @@ textarea { resize: vertical; min-height: 60px; }
   .toast-error { background: #3a1b1b; color: #ef9a9a; border-color: #c62828; }
   .toast-info { background: #1b2a3a; color: #90caf9; border-color: #1565c0; }
 }
+
+/* ---- Payments: Lightning invoices and Cashu ecash carried by notes ---- */
+.note-payments { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.6rem; }
+.note-payment { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.55rem 0.75rem; border: 1px solid #d9d9d9; border-radius: 8px; background: #fafafa; font-size: 0.92rem; }
+.note-payment-kind { font-weight: 600; }
+.note-payment-detail { color: #555; flex: 1 1 12rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-payment-status { color: #2a7; font-weight: 600; }
+.note-payment-status.err { color: #c33; }
+.note-payment .btn-secondary { margin-top: 0; }
+.compose-payment-form { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.5rem; }
+.compose-payment-form input, .compose-payment-form textarea { font: inherit; padding: 0.35rem 0.5rem; border: 1px solid #ccc; border-radius: 6px; }
+.compose-payment-form textarea { width: 100%; min-height: 4rem; font-family: ui-monospace, monospace; font-size: 0.8rem; }
+.post-payment-chip { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.5rem; border: 1px solid #d9d9d9; border-radius: 999px; font-size: 0.85rem; background: #fafafa; }
+.wallet-status { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: center; margin: 0.4rem 0; }
+.wallet-status .ok { color: #2a7; font-weight: 600; }
+.wallet-status .err { color: #c33; }
+@media (prefers-color-scheme: dark) {
+  .note-payment, .post-payment-chip { background: #1e1e1e; border-color: #3a3a3a; }
+  .note-payment-detail { color: #b0b0b0; }
+}

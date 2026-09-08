@@ -142,13 +142,14 @@ export function useRelayConnection(deps: RelayConnectionDeps) {
         const profileUpdates: Record<string, ProfileData> = {};
         batch.filter((e) => e.kind === 0).forEach((e) => {
           try {
-            const raw = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
+            const raw = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string; lud16?: string };
             profileUpdates[e.pubkey] = {
               name: raw.name ?? raw.display_name,
               about: raw.about,
               picture: raw.picture,
               banner: raw.banner,
               nip05: raw.nip05,
+              lud16: typeof raw.lud16 === "string" ? raw.lud16 : undefined,
             };
           } catch (_) {}
         });

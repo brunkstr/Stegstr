@@ -6,6 +6,10 @@
 
 type LogLevel = "info" | "warn" | "error" | "action";
 type LogAction =
+  | "wallet_connect"
+  | "pay_invoice"
+  | "zap"
+  | "cashu_redeem"
   | "detect_started"
   | "detect_completed"
   | "detect_error"

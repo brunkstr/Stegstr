@@ -6,6 +6,11 @@ import { MAX_NOTE_USER_CONTENT } from "./constants";
 
 export type FeedItem = { type: "note"; note: NostrEvent; sortAt: number } | { type: "repost"; repost: NostrEvent; note: NostrEvent; sortAt: number };
 
+import { useState } from "react";
+import type { PaymentAttachment } from "./wallet/attachments";
+import { decodeInvoice, formatSats } from "./wallet/bolt11";
+import { decodeToken, looksLikeCashuToken } from "./wallet/cashu";
+
 export interface FeedViewProps {
   // Compose
   myPicture: string | null;
@@ -18,6 +23,11 @@ export interface FeedViewProps {
   postMediaInputRef: React.RefObject<HTMLInputElement | null>;
   handlePostMediaUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handlePost: () => void;
+  /** Payment attachments queued for the next post, and the wallet used to create invoices. */
+  postPayments: PaymentAttachment[];
+  setPostPayments: React.Dispatch<React.SetStateAction<PaymentAttachment[]>>;
+  walletConnected: boolean;
+  makeInvoice: (sats: number, memo: string) => Promise<string | null>;
   // Feed filter
   feedFilter: "global" | "following";
   setFeedFilter: React.Dispatch<React.SetStateAction<"global" | "following">>;
@@ -56,6 +66,7 @@ export interface FeedViewProps {
 export function FeedView({
   myPicture, myName, newPost, setNewPost, postMediaUrls, setPostMediaUrls,
   uploadingMedia, postMediaInputRef, handlePostMediaUpload, handlePost,
+  postPayments, setPostPayments, walletConnected, makeInvoice,
   feedFilter, setFeedFilter,
   notesEmpty, feedItems,
   searchTrim, searchLower, searchNoSpaces, searchPubkeyHex, npubStr, networkEnabled,
@@ -66,6 +77,35 @@ export function FeedView({
   loadingMore, loadMoreSentinelRef,
   setViewingProfilePubkey, setView,
 }: FeedViewProps) {
+  const [payForm, setPayForm] = useState<"none" | "invoice" | "cashu">("none");
+  const [reqSats, setReqSats] = useState("");
+  const [reqMemo, setReqMemo] = useState("");
+  const [cashuInput, setCashuInput] = useState("");
+  const [payError, setPayError] = useState<string | null>(null);
+  const [making, setMaking] = useState(false);
+  const addInvoice = async () => {
+    const sats = Number(reqSats);
+    if (!Number.isInteger(sats) || sats <= 0) { setPayError("Enter a whole number of sats."); return; }
+    setMaking(true); setPayError(null);
+    const inv = await makeInvoice(sats, reqMemo.trim());
+    setMaking(false);
+    if (!inv) { setPayError("The wallet did not return an invoice."); return; }
+    setPostPayments((p) => [...p, { type: "bolt11", value: inv }]);
+    setReqSats(""); setReqMemo(""); setPayForm("none");
+  };
+  const addCashu = () => {
+    const raw = cashuInput.trim().replace(/^cashu:/i, "");
+    if (!looksLikeCashuToken(raw)) { setPayError("That does not look like a Cashu token (cashuA… or cashuB…)."); return; }
+    try { decodeToken(raw); } catch (e) { setPayError("Token could not be read: " + (e instanceof Error ? e.message : String(e))); return; }
+    setPostPayments((p) => [...p, { type: "cashu", value: raw }]);
+    setCashuInput(""); setPayError(null); setPayForm("none");
+  };
+  const chipLabel = (a: PaymentAttachment) => {
+    try {
+      if (a.type === "bolt11") { const d = decodeInvoice(a.value); return `⚡ ${formatSats(d.amountSat)}${d.description ? " · " + d.description : ""}`; }
+      const t = decodeToken(a.value); return `🥜 ${t.amount} ${t.unit}`;
+    } catch { return a.type === "bolt11" ? "⚡ invoice" : "🥜 ecash"; }
+  };
   return (
     <>
       <section className="compose-section">
@@ -95,12 +135,40 @@ export function FeedView({
               ))}
             </div>
           )}
+          {postPayments.length > 0 && (
+            <div className="post-media-preview">
+              {postPayments.map((a, i) => (
+                <span key={i} className="post-payment-chip">
+                  {chipLabel(a)}
+                  <button type="button" className="btn-remove muted" onClick={() => setPostPayments((p) => p.filter((_, j) => j !== i))} title="Remove">×</button>
+                </span>
+              ))}
+            </div>
+          )}
+          {payForm === "invoice" && (
+            <div className="compose-payment-form">
+              <input type="number" min={1} step={1} placeholder="sats" value={reqSats} onChange={(e) => setReqSats(e.target.value)} style={{ width: "7rem" }} aria-label="Amount in sats" />
+              <input type="text" placeholder="what for (optional)" value={reqMemo} onChange={(e) => setReqMemo(e.target.value)} maxLength={80} aria-label="Invoice memo" />
+              <button type="button" className="btn-secondary" onClick={addInvoice} disabled={making}>{making ? "Creating…" : "Add invoice"}</button>
+              <button type="button" className="btn-secondary" onClick={() => { setPayForm("none"); setPayError(null); }}>Cancel</button>
+            </div>
+          )}
+          {payForm === "cashu" && (
+            <div className="compose-payment-form">
+              <textarea placeholder="Paste a Cashu token (cashuA… or cashuB…) from your ecash wallet. Whoever redeems it first gets it." value={cashuInput} onChange={(e) => setCashuInput(e.target.value)} aria-label="Cashu token" />
+              <button type="button" className="btn-secondary" onClick={addCashu}>Add ecash</button>
+              <button type="button" className="btn-secondary" onClick={() => { setPayForm("none"); setPayError(null); }}>Cancel</button>
+            </div>
+          )}
+          {payError && <p className="muted" style={{ color: "#c33" }}>{payError}</p>}
           <div className="compose-actions">
             <input ref={postMediaInputRef} type="file" accept="image/*,video/*" multiple className="hidden-input" onChange={handlePostMediaUpload} />
             <button type="button" className="btn-secondary" onClick={() => postMediaInputRef.current?.click()} disabled={uploadingMedia} title="Add photo or video">
               {uploadingMedia ? "Uploading…" : "Attach"}
             </button>
-            <button type="button" onClick={handlePost} className="btn-primary" disabled={(!newPost.trim() && postMediaUrls.length === 0) || uploadingMedia}>Post</button>
+            <button type="button" className="btn-secondary" onClick={() => setPayForm(payForm === "invoice" ? "none" : "invoice")} disabled={!walletConnected} title={walletConnected ? "Add a Lightning invoice readers can pay" : "Connect a Lightning wallet in Settings first"}>⚡ Request sats</button>
+            <button type="button" className="btn-secondary" onClick={() => setPayForm(payForm === "cashu" ? "none" : "cashu")} title="Attach a Cashu ecash token">🥜 Attach ecash</button>
+            <button type="button" onClick={handlePost} className="btn-primary" disabled={(!newPost.trim() && postMediaUrls.length === 0 && postPayments.length === 0) || uploadingMedia}>Post</button>
           </div>
           <p className="muted char-counter">{newPost.length}/{MAX_NOTE_USER_CONTENT} (appends &quot; Sent by Stegstr.&quot;)</p>
         </div>

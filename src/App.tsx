@@ -3,6 +3,8 @@ import * as Nostr from "./nostr-stub";
 import { isWeb } from "./platform-web";
 import { getActiveReferralCode, setReferralCode as storeReferralCode } from "./app/referral";
 import { withReferralTag } from "./app/referral";
+import { useWallet } from "./app/useWallet";
+import { attachmentTags, type PaymentAttachment } from "./wallet/attachments";
 import { getTauri } from "./platform-desktop";
 import { ensureStegstrSuffix } from "./constants";
 import * as logger from "./logger";
@@ -59,6 +61,7 @@ function App({ profile }: { profile: string | null }) {
   const [events, setEvents] = useState<NostrEvent[]>([]);
   const [profiles, setProfiles] = useState<Record<string, ProfileData>>({});
   const [newPost, setNewPost] = useState("");
+  const [postPayments, setPostPayments] = useState<PaymentAttachment[]>([]);
   const [status, setStatus] = useState<string>("");
   const [view, setView] = useState<View>("feed");
   const [replyingTo, setReplyingTo] = useState<NostrEvent | null>(null);
@@ -347,6 +350,7 @@ function App({ profile }: { profile: string | null }) {
   const hasBookmarked = (noteId: string) => bookmarkIds.has(noteId);
 
   // ---- extracted feature hooks that read derived data (merge plan step 2) ----
+  const wallet = useWallet({ profile, effectivePrivKey, pubkey, relayUrls, profiles, publishViaRelay, networkEnabled, setStatus });
   const { flushQueuedZaps, handleBookmark, handleDelete, handleLike, handleReply, handleRepost, handleUnbookmark, handleZap, queuedZaps } = useNoteActions({ bookmarksEvent, canPublishToNetwork, effectivePrivKey, identities, networkEnabled, profile, pubkey, publishViaRelay, relayStatus, relayUrls, replyContent, replyingTo, selfPubkeys, setEvents, setReplyContent, setReplyingTo, setStatus });
   const { editAbout, editBanner, editName, editPicture, editProfileOpen, handleEditProfileOpen, handleEditProfileSave, handlePostMediaUpload, postMediaUrls, setEditAbout, setEditBanner, setEditName, setEditPicture, setEditProfileOpen, setPostMediaUrls, uploadingMedia } = useProfileAndMedia({ actingIdentity, canPublishToNetwork, effectivePrivKey, myAbout, myBanner, myName, myPicture, networkEnabled, pubkey, publishViaRelay, setEvents, setProfiles, setStatus });
 
@@ -824,10 +828,12 @@ function App({ profile }: { profile: string | null }) {
     if (!effectivePrivKey) return;
     const textPart = newPost.trim();
     const mediaPart = postMediaUrls.length ? "\n" + postMediaUrls.join("\n") : "";
-    if (!textPart && !postMediaUrls.length) return;
+    // Invoices and ecash go in tags for Stegstr and in the content for other clients, which render them as text.
+    const paymentPart = postPayments.length ? "\n" + postPayments.map((a) => a.value).join("\n") : "";
+    if (!textPart && !postMediaUrls.length && !postPayments.length) return;
     const sk = Nostr.hexToBytes(effectivePrivKey);
-    const content = ensureStegstrSuffix((textPart || " ") + mediaPart);
-    const tags: string[][] = withReferralTag(postMediaUrls.flatMap((url) => [["im", url]]));
+    const content = ensureStegstrSuffix((textPart || " ") + mediaPart + paymentPart);
+    const tags: string[][] = withReferralTag([...postMediaUrls.flatMap((url) => [["im", url]]), ...attachmentTags(postPayments)]);
     const ev = await Nostr.finishEventAsync(
       {
         kind: 1,
@@ -840,10 +846,11 @@ function App({ profile }: { profile: string | null }) {
     setEvents((prev) => [ev as NostrEvent, ...prev]);
     setNewPost("");
     setPostMediaUrls([]);
+    setPostPayments([]);
     if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
     setStatus("Posted");
     logger.logAction("post", "Posted note", { networkEnabled, contentLength: content.length, mediaCount: postMediaUrls.length });
-  }, [effectivePrivKey, newPost, postMediaUrls, networkEnabled, canPublishToNetwork]);
+  }, [effectivePrivKey, newPost, postMediaUrls, postPayments, networkEnabled, canPublishToNetwork]);
 
   const handleFollow = useCallback(
     async (theirPk: string) => {
@@ -944,16 +951,27 @@ function App({ profile }: { profile: string | null }) {
     setView("profile");
   }, []);
 
+  // With a wallet connected, Zap pays the author's Lightning address directly; otherwise the
+  // original flow (publish a zap request, open zap.stream) stays.
+  const zapAction = useMemo(() => (wallet.connected ? (ev: NostrEvent) => { void wallet.zapNote(ev); } : handleZap), [wallet.connected, wallet.zapNote, handleZap]);
+  const walletActions = useMemo(() => ({
+    connected: wallet.connected,
+    states: wallet.paymentStates,
+    onPayInvoice: (inv: string) => { void wallet.payInvoice(inv); },
+    onRedeemCashu: (tok: string) => { void wallet.redeemCashu(tok); },
+    onCheckCashu: (tok: string) => { void wallet.checkCashu(tok); },
+  }), [wallet.connected, wallet.paymentStates, wallet.payInvoice, wallet.redeemCashu, wallet.checkCashu]);
   const noteCardActions: NoteCardActions = useMemo(() => ({
     onNavigateProfile: navigateToProfile,
     onReply: (ev: NostrEvent) => { setReplyingTo(ev); setReplyContent(""); },
     onLike: handleLike,
     onRepost: handleRepost,
-    onZap: handleZap,
+    onZap: zapAction,
     onBookmark: handleBookmark,
     onUnbookmark: handleUnbookmark,
     onDelete: handleDelete,
-  }), [navigateToProfile, handleLike, handleRepost, handleZap, handleBookmark, handleUnbookmark, handleDelete]);
+    wallet: walletActions,
+  }), [navigateToProfile, handleLike, handleRepost, zapAction, handleBookmark, handleUnbookmark, handleDelete, walletActions]);
 
   /** Actions for views that redirect reply to the feed. */
   const noteCardActionsRedirectReply: NoteCardActions = useMemo(() => ({
@@ -1117,6 +1135,10 @@ function App({ profile }: { profile: string | null }) {
               postMediaInputRef={postMediaInputRef}
               handlePostMediaUpload={handlePostMediaUpload}
               handlePost={handlePost}
+              postPayments={postPayments}
+              setPostPayments={setPostPayments}
+              walletConnected={wallet.connected}
+              makeInvoice={wallet.makeInvoice}
               feedFilter={feedFilter}
               setFeedFilter={setFeedFilter}
               notesEmpty={notes.length === 0}
@@ -1281,6 +1303,7 @@ function App({ profile }: { profile: string | null }) {
               onStatus={setStatus}
               referralCode={referralCode}
               setReferralCode={setReferralCode}
+              wallet={wallet}
             />
           )}
         </div>
