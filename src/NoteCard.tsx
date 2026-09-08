@@ -182,7 +182,7 @@ function NotePayments({ event: ev, wallet }: { event: NostrEvent; wallet?: NoteC
           );
         }
         let label = "Ecash", detail = "";
-        try { const t = decodeToken(a.value); label = `Ecash ${t.amount.toLocaleString()} ${t.unit}`; detail = `${t.memo ? t.memo + " · " : ""}${mintHost(t.mint)}`; } catch { detail = "unreadable token"; }
+        try { const t = decodeToken(a.value); label = `Ecash ${t.amount.toLocaleString()} ${t.unit}`; detail = `${t.memo ? t.memo + " · " : ""}${mintHost(t.mint)} · first to redeem keeps it`; } catch { detail = "unreadable token"; }
         return (
           <div className="note-payment" key={"c" + a.value.slice(-24)}>
             <span className="note-payment-kind">{label}</span>
