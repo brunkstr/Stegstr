@@ -87,6 +87,26 @@ jobs:
             npm run tauri build -- ${{ matrix.args }}
           fi
 
+      - name: Re-sign app bundle (macOS, ad-hoc fallback)
+        # Tauri's own build only applies Rust/ld's automatic per-binary ad-hoc
+        # signature, which doesn't seal Contents/Resources or the bundled
+        # stegstr-cli binary into the bundle's signature. Gatekeeper then reports
+        # the whole .app as damaged (not just "unidentified developer") and
+        # right-click -> Open can't fix it. An explicit bundle-level re-sign
+        # reseals everything so it falls back to the normal, bypassable warning.
+        # Skipped when a real Developer ID identity is configured -- that path
+        # already produces a valid signature and gets notarized below.
+        if: matrix.platform == 'macos-latest' && env.APPLE_SIGNING_ENABLED != 'true'
+        shell: bash
+        run: |
+          if [[ "$MATRIX_ARGS" == *"universal-apple-darwin"* ]]; then
+            APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Stegstr.app"
+          else
+            APP_PATH="src-tauri/target/release/bundle/macos/Stegstr.app"
+          fi
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict --verbose=4 "$APP_PATH"
+
       - name: Notarize app (macOS, optional)
         if: matrix.platform == 'macos-latest' && env.APPLE_SIGNING_ENABLED == 'true'
         shell: bash
